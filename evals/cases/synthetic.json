@@ -1,0 +1,142 @@
+[
+ {
+  "q": "is this about kubernetes?",
+  "x": "the pod keeps crashlooping after the deploy",
+  "y": "yes",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this about kubernetes?",
+  "x": "my sourdough starter smells like acetone",
+  "y": "no",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this about kubernetes?",
+  "x": "helm upgrade failed: another operation is in progress",
+  "y": "yes",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this about kubernetes?",
+  "x": "the quarterly revenue grew 12 percent",
+  "y": "no",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this a bug fix?",
+  "x": "fix(inject-dashboard): weigh coverage gaps per session so codex rows stop indicting the nudge",
+  "y": "yes",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this a bug fix?",
+  "x": "feat(skills): add a cfp-submit skill",
+  "y": "no",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this a bug fix?",
+  "x": "chore(model): switching to opus",
+  "y": "no",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "is this a bug fix?",
+  "x": "the script crashed on empty input, now it exits cleanly",
+  "y": "yes",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "does the user sound frustrated?",
+  "x": "this is the third time I asked, why does it keep failing",
+  "y": "yes",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "does the user sound frustrated?",
+  "x": "thanks, that works great",
+  "y": "no",
+  "labels": [
+   "yes",
+   "no"
+  ]
+ },
+ {
+  "q": "what kind of change is this?",
+  "x": "chore(model): switching to opus",
+  "y": "chore",
+  "labels": [
+   "bug",
+   "feature",
+   "chore"
+  ]
+ },
+ {
+  "q": "what kind of change is this?",
+  "x": "fix: nil pointer when config is empty",
+  "y": "bug",
+  "labels": [
+   "bug",
+   "feature",
+   "chore"
+  ]
+ },
+ {
+  "q": "what kind of change is this?",
+  "x": "feat: add --json flag to the export command",
+  "y": "feature",
+  "labels": [
+   "bug",
+   "feature",
+   "chore"
+  ]
+ },
+ {
+  "q": "how should this email be triaged?",
+  "x": "From: noreply@shop.example. Subject: 50% off sunglasses this weekend only",
+  "y": "garbage",
+  "labels": [
+   "important",
+   "garbage",
+   "other"
+  ]
+ },
+ {
+  "q": "how should this email be triaged?",
+  "x": "From: cto@company.com. Subject: need your sign-off on the incident report by 3pm",
+  "y": "important",
+  "labels": [
+   "important",
+   "garbage",
+   "other"
+  ]
+ }
+]

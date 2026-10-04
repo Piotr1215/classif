@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""classif: a semantic if on a local model, ad hoc or as a named spec.
+
+    classif "is this a bug fix?" "$msg"          # one question, one text: every flag classif takes
+    make 2>&1 | classif -p "is this an error?"
+    classif -e paid,unpaid,reversed "what is the state of INV-42?" -i ledger.txt
+    classif "Invoice INV-42 is paid." -i ledger.txt
+
+The first argument decides. One of the commands below runs a named spec;
+anything else is a question for the judge (judge.py), whose flags and
+exit codes apply unchanged (`classif -h` lists them). A question that is
+itself a command word goes after `--`: classif -- pause.
+
+    classif specs                                # each spec, the fields it wants, its file
+    classif classify greeting text="Hello there" --hook triage
+    classif smoke greeting
+    classif histogram greeting [--hook H] [--days N]
+
+A spec, <name>.json in ~/.config/classif/specs (or CLASSIF_DIR), names the
+question and text templates, each field's char cap, the labels, the model, a
+threshold and a smoke set. judge.py's judge() does the scoring, so the
+prompt, the label families, the mass floor and calibration are judge.py's own.
+
+An empty threshold is shadow: items are scored and logged, nothing acts on
+them. histogram reads the log and names the valley a threshold belongs in.
+
+Hosts: a spec's own hosts list wins, else the ones already serving the
+spec's model come first, since on a small GPU a second model evicts the
+first. Fields are cut to the spec's caps: a longer field costs time, and a
+long query pushes p(yes) up on its own.
+
+Env: CLASSIF=0 disables everything, as does `classif pause` until
+`classif resume`. CLASSIF_HOSTS, CLASSIF_TIMEOUT and
+CLASSIF_CALIBRATION as for judge.py. CLASSIF_DIR (the only spec dir when set),
+CLASSIF_LOG (default ~/.local/state/classif/log.jsonl).
+"""
+import argparse
+import fcntl
+import glob
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def _load_class():
+    loader = importlib.machinery.SourceFileLoader("classif_class", os.path.join(HERE, "judge.py"))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+cls = _load_class()
+
+INFLIGHT = 8
+SMOKE_MASS = 0.95
+SMOKE_ACC = 0.85
+LOG_MAX = 16 << 20
+LOG_KEEP = 20000
+
+
+def log_path():
+    return os.environ.get("CLASSIF_LOG") or os.path.expanduser("~/.local/state/classif/log.jsonl")
+
+
+def pause_path():
+    return os.path.join(os.path.dirname(log_path()), "paused")
+
+
+def off():
+    """Why classif must not call a model now, or "" when it may: CLASSIF=0, or
+    the pause file `classif pause` writes to give the GPU to something else."""
+    if os.environ.get("CLASSIF", "1") == "0":
+        return "CLASSIF=0"
+    if os.path.exists(pause_path()):
+        return "paused (classif resume)"
+    return ""
+
+
+def spec_dirs():
+    """Where a spec is looked up: CLASSIF_DIR alone when set, else the user's
+    own specs in the config dir."""
+    if os.environ.get("CLASSIF_DIR"):
+        return [os.environ["CLASSIF_DIR"]]
+    return [os.path.join(cls.config_dir(), "specs")]
+
+
+def spec_names():
+    return sorted({os.path.basename(f)[:-5] for d in spec_dirs() for f in glob.glob(os.path.join(d, "*.json"))})
+
+
+def specs():
+    """Each spec the lookup finds, from the place it is read: its name, the
+    fields classify wants, its labels and its file. A name in two places is
+    listed once, as load_spec reads it; a file that does not parse says so."""
+    rows = []
+    for name in spec_names():
+        path = next(p for p in (os.path.join(d, name + ".json") for d in spec_dirs()) if os.path.exists(p))
+        try:
+            with open(path) as fh:
+                s = json.load(fh)
+            fields, labels = " ".join(f"{k}=" for k in s["fields"]), ",".join(s["labels"])
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            fields, labels = f"unreadable: {e}", ""
+        rows.append((name, fields, labels, path))
+    w = [max([len(r[i]) for r in rows] + [len(h)]) for i, h in enumerate(("spec", "fields", "labels"))]
+    out = [f"{'spec':<{w[0]}}  {'fields':<{w[1]}}  {'labels':<{w[2]}}  file"]
+    out += [f"{n:<{w[0]}}  {f:<{w[1]}}  {l:<{w[2]}}  {path}" for n, f, l, path in rows]
+    out.append(f"looked in {', '.join(spec_dirs())}")
+    out.append("score one: classif classify SPEC field=value ...")
+    return "\n".join(out)
+
+
+def load_spec(name):
+    paths = [os.path.join(d, name + ".json") for d in spec_dirs()]
+    with open(next((p for p in paths if os.path.exists(p)), paths[-1])) as fh:
+        return json.load(fh)
+
+
+def render(spec, fields):
+    """Question and text for the judge, each field cut to its cap. Fields named in
+    the spec's collapse list are whitespace collapsed first, so a question
+    reads as one line. The rest keep their newlines: collapsing a commit
+    message's lines moved llama3.2:3b's p(yes) on a relevant chunk from 0.80
+    to 0.41, and the eval's threshold was measured on raw chunks."""
+    flat = set(spec.get("collapse", []))
+    cut = {}
+    for k, n in spec["fields"].items():
+        v = str(fields.get(k) or "")
+        cut[k] = (" ".join(v.split()) if k in flat else v.strip())[:n]
+    for k, v in cut.items():
+        if not v:
+            raise ValueError(f"empty field: {k}")
+    return spec["question"].format(**cut), spec["text"].format(**cut)
+
+
+def judge_item(spec, fields, host, timeout=None):
+    try:
+        question, text = render(spec, fields)
+    except ValueError as e:
+        return {"label": None, "unscored": str(e)}
+    except (KeyError, IndexError) as e:
+        return {"label": None, "unscored": f"spec template: unknown field {e}"}
+    return cls.judge(question, text, spec["labels"], model=spec["model"], host=host,
+                     num_ctx=spec.get("num_ctx", cls.NUM_CTX), timeout=timeout)
+
+
+def pick(spec):
+    """Earliest reachable host. CLASSIF_HOSTS wins, then the spec's own hosts in
+    order, then the judge's hosts with those already serving the model first.
+    CLASSIF_HOSTS is taken as given: it names the hosts to use, and a bare
+    entry in it names no model to match."""
+    env = os.environ.get("CLASSIF_HOSTS", "").strip()
+    if spec.get("hosts") and not env:
+        return cls.pick_host(list(spec["hosts"]))
+    model = spec["model"]
+    order = sorted(cls.hosts(), key=lambda hm: hm[1] != model)
+    return cls.pick_host([h for h, _ in order])
+
+
+def decide(spec, res):
+    """unscored, drop (a label at or past its threshold p), unsure (the
+    winner under the spec's min_p), shadow (empty threshold), or keep."""
+    if res["label"] is None:
+        return "unscored"
+    th = spec.get("threshold") or {}
+    if any(res["p"].get(l, 0.0) >= v for l, v in th.items()):
+        return "drop"
+    if res["p"][res["label"]] < spec.get("min_p", 0.0):
+        return "unsure"
+    return "keep" if th else "shadow"
+
+
+def no_host():
+    return "no Ollama host answered: " + ",".join(h for h, _ in cls.hosts())
+
+
+# --- spool ---------------------------------------------------------------
+
+def _epoch(iso):
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+# --- log -----------------------------------------------------------------
+
+def append(rows, path=None, cap=None, keep=None):
+    """One write per row under the file's write lock, trimming to its last
+    keep rows past cap bytes (the log's by default; cap 0 never trims).
+    Every writer takes the lock, so a trim never drops a row appended while
+    it copied the file."""
+    path = path or log_path()
+    cap = LOG_MAX if cap is None else cap
+    keep = LOG_KEEP if keep is None else keep
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".write.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            for r in rows:
+                os.write(fd, (json.dumps(r) + "\n").encode())
+        finally:
+            os.close(fd)
+        if cap and os.path.getsize(path) > cap:
+            with open(path, "rb") as fh:
+                tail = fh.readlines()[-keep:]
+            with open(path + ".tmp", "wb") as fh:
+                fh.writelines(tail)
+            os.replace(path + ".tmp", path)
+
+
+def make_row(name, spec, host, meta, key, aux, res, decision):
+    r = {"ts": meta["ts"], "spec": name, "session": meta["session"], "hook": meta["hook"],
+         "channel": meta["channel"], "model": spec["model"], "host": host, "key": key[:200], "aux": aux}
+    if meta.get("src"):
+        r["src"] = meta["src"]
+    if res["label"] is None:
+        r.update(decision="unscored", why=res["unscored"][:300], mass=res.get("mass"))
+    else:
+        r.update(decision=decision, label=res["label"], p={l: round(v, 4) for l, v in res["p"].items()},
+                 mass=round(res["mass"], 4), ms=res["ms"])
+    return r
+
+
+# --- notmuch -------------------------------------------------------------
+
+
+def pause():
+    """Give the GPU to something else (the EVE launch wrapper calls this):
+    write the pause file every consumer checks, then unload each loaded model
+    a spec names from the spec's hosts. resume() removes the file, and the
+    next call loads the model again. Hooks run in other processes, so an
+    environment variable set by the caller could not reach them."""
+    os.makedirs(os.path.dirname(pause_path()), exist_ok=True)
+    open(pause_path(), "w").close()
+    specs = []
+    for name in spec_names():
+        try:
+            specs.append(load_spec(name))
+        except (OSError, ValueError):
+            continue
+    env = [h for h, _ in cls.parse_hosts(os.environ.get("CLASSIF_HOSTS", "").split(","))]
+    hosts = env or sorted({h for sp in specs for h in sp.get("hosts", [])})
+    models = {sp["model"] for sp in specs}
+    for host in hosts:
+        try:
+            with urllib.request.urlopen(f"http://{host}/api/ps", timeout=2) as r:
+                resident = {m.get("model", m.get("name")) for m in json.load(r).get("models") or []}
+            for m in sorted(models & resident):
+                req = urllib.request.Request(f"http://{host}/api/generate",
+                                             data=json.dumps({"model": m, "keep_alive": 0}).encode(),
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10).close()
+                print(f"classif: unloaded {m} on {host}")
+        except (OSError, ValueError) as e:
+            print(f"classif: {host}: {e}", file=sys.stderr)
+    return 0
+
+
+def resume():
+    try:
+        os.remove(pause_path())
+    except FileNotFoundError:
+        pass
+    return 0
+
+
+# --- commands ------------------------------------------------------------
+
+
+def valley(c):
+    """Lowest-count bin between the low and the high mode, the confident-low
+    side on ties. None when the modes are not separated by a real dip."""
+    lo = max(range(10), key=lambda i: c[i])
+    hi = max(range(10, 20), key=lambda i: c[i])
+    mid = range(lo + 1, hi)
+    if not c[lo] or not c[hi] or not mid:
+        return None
+    v = min(mid, key=lambda i: c[i])
+    return v if c[v] <= 0.5 * min(c[lo], c[hi]) else None
+
+
+def histograms(days=None):
+    """Which histograms the log holds: rows with a p, per spec and hook."""
+    since = time.time() - days * 86400 if days else None
+    counts = {}
+    for r in _jsonl(log_path()):
+        if "p" not in r or (since and (_epoch(r.get("ts")) or 0) < since):
+            continue
+        k = (str(r.get("spec")), str(r.get("hook")))
+        counts[k] = counts.get(k, 0) + 1
+    w = max([len(k[0]) for k in counts] + [4])
+    h = max([len(k[1]) for k in counts] + [4])
+    out = [f"{'spec':<{w}}  {'hook':<{h}}  rows"]
+    out += [f"{sp:<{w}}  {hk:<{h}}  {n}" for (sp, hk), n in sorted(counts.items())]
+    out.append("draw one: classif histogram SPEC [--hook HOOK] [--days N]")
+    return "\n".join(out)
+
+
+def histogram(name, hook=None, days=None):
+    spec = load_spec(name)
+    labels = spec["labels"][:1] if len(spec["labels"]) == 2 else spec["labels"]
+    since = time.time() - days * 86400 if days else None
+    rows = []
+    try:
+        with open(log_path()) as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("spec") != name or "p" not in r:
+                    continue
+                if hook and r.get("hook") != hook:
+                    continue
+                if since and (_epoch(r.get("ts")) or 0) < since:
+                    continue
+                rows.append(r)
+    except OSError:
+        pass
+    out = []
+    for l in labels:
+        counts = [0] * 20
+        for r in rows:
+            counts[min(int(r["p"].get(l, 0) * 20), 19)] += 1
+        out.append(f"{name} p({l}) n={len(rows)}" + (f" hook={hook}" if hook else ""))
+        top = max(counts) or 1
+        out += [f"{i / 20:.2f}-{(i + 1) / 20:.2f} {'#' * round(40 * c / top):<40} {c}" for i, c in enumerate(counts)]
+        v = valley(counts)
+        out.append("no valley" if v is None else f"valley at {v / 20:.2f}-{(v + 1) / 20:.2f} ({counts[v]} rows)")
+    return "\n".join(out)
+
+
+def _jsonl(path):
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def smoke(name):
+    """Every row answers with label mass >= 0.95 (the label words are what the
+    model wants first) and at least 85% land on their expected label."""
+    spec = load_spec(name)
+    host = pick(spec)
+    if not host:
+        print(f"classif: skip: {no_host()}", file=sys.stderr)
+        return 2
+    rows = spec["smoke"]
+    with ThreadPoolExecutor(INFLIGHT) as pool:
+        res = list(pool.map(lambda r: judge_item(spec, r, host), rows))
+    right = low = 0
+    first = spec["labels"][0]
+    for r, x in zip(rows, res):
+        mass = x.get("mass") or 0.0
+        hit = x["label"] == r["expect"]
+        right += hit
+        low += mass < SMOKE_MASS
+        shown = {k: str(r.get(k, ""))[:60] for k in spec["fields"]}
+        p = x["p"][first] if x["label"] else float("nan")
+        print(f"{'ok ' if hit and mass >= SMOKE_MASS else 'BAD'} want {r['expect']:<4} got {x['label']} "
+              f"p({first}) {p:.3f} mass {mass:.2f}  {json.dumps(shown)}")
+    ok = not low and right >= SMOKE_ACC * len(rows)
+    print(f"{right}/{len(rows)} expected labels, {low} under mass {SMOKE_MASS}, host {host}: {'pass' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def classify(name, pairs, hook="classify"):
+    """One item from the command line. The row it logs under hook lets a
+    consumer that keeps the verdict in its own state read its histogram.
+    Exit 2 while off, as for no host: the consumer keeps the item unchanged.
+    Exit 3 when the winner is under the spec's min_p: unsure, as in the judge."""
+    if off():
+        print(f"classif: {off()}", file=sys.stderr)
+        return 2
+    spec = load_spec(name)
+    fields = dict(p.split("=", 1) for p in pairs)
+    host = pick(spec)
+    if not host:
+        print(f"classif: {no_host()}", file=sys.stderr)
+        return 2
+    r = judge_item(spec, fields, host)
+    d = decide(spec, r)
+    meta = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "session": "", "hook": hook, "channel": "cli"}
+    append([make_row(name, spec, host, meta, next(iter(fields.values()), ""), {}, r, d)])
+    if r["label"] is None:
+        print(json.dumps(r))
+        return 2
+    print(json.dumps({"label": r["label"], "p": {l: round(v, 4) for l, v in r["p"].items()}, "decision": d,
+                      "mass": round(r["mass"], 4), "model": r["model"], "host": r["host"], "ms": r["ms"]}))
+    if d == "unsure":
+        return 3
+    return 0 if r["label"] == spec["labels"][0] else 1
+
+
+COMMANDS = ("specs", "classify", "smoke", "pause", "resume", "histogram")
+
+
+def main():
+    first = sys.argv[1] if len(sys.argv) > 1 else None
+    if first is None:
+        # Piped text with no question has nothing to be judged against.
+        print("classif: pass a question or a command; see classif -h", file=sys.stderr)
+        return 2
+    if first not in COMMANDS and first not in ("-h", "--help"):
+        try:
+            return cls.main(sys.argv[1:], prog="classif")
+        except BrokenPipeError:
+            # As in the judge: only the gate's write of the input can fill the pipe, after the verdict.
+            return 0
+    if first in ("-h", "--help"):
+        # The question form first: it is what most calls are.
+        try:
+            cls.main(["-h"], prog="classif")
+        except SystemExit:
+            pass
+        # Only what a person runs; hooks and spec authoring (an agent, through
+        # the classif skill) use the rest, which each still answer -h.
+        print("\nCommands: classif COMMAND ..., see classif COMMAND -h")
+        for name, what in (("specs", "list the saved questions (specs) and the fields each wants"),
+                           ("histogram", "how sure a spec's answers have been, from the log"),
+                           ("pause", "stop every consumer and unload the models"),
+                           ("resume", "undo pause")):
+            print(f"  {name:13} {what}")
+        print("For hooks and spec authoring: classify, smoke")
+        print("\nFull documentation <https://github.com/Piotr1215/classif>")
+        return 0
+    ap = argparse.ArgumentParser(prog="classif", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("specs", help="list the specs, the fields each wants and where each lives")
+    c = sub.add_parser("classify", help="score one item: field=value ...")
+    c.add_argument("spec")
+    c.add_argument("--hook", default="classify", help="consumer name on the log row, for histogram --hook")
+    c.add_argument("fields", nargs="+")
+    sm = sub.add_parser("smoke", help="check a spec's smoke rows on a live model")
+    sm.add_argument("spec")
+    sub.add_parser("pause", help="stop every consumer and unload spec models, e.g. while a game needs the GPU")
+    sub.add_parser("resume", help="undo pause")
+    h = sub.add_parser("histogram", help="p histogram from the log, with the valley; no spec lists what the log holds")
+    h.add_argument("spec", nargs="?", help="spec to draw; omit to list the spec and hook pairs with rows")
+    h.add_argument("--hook", help="only rows this hook logged")
+    h.add_argument("--days", type=float, help="only rows from the last N days")
+    a = ap.parse_args()
+    if getattr(a, "spec", None) and a.spec not in spec_names():
+        print(f"classif {a.cmd}: no spec named {a.spec}; specs: {', '.join(spec_names()) or 'none'} "
+              f"(looked in {', '.join(spec_dirs())})", file=sys.stderr)
+        return 2
+    if a.cmd == "specs":
+        print(specs())
+        return 0
+    if a.cmd == "classify":
+        return classify(a.spec, a.fields, a.hook)
+    if a.cmd == "smoke":
+        return smoke(a.spec)
+    if a.cmd == "pause":
+        return pause()
+    if a.cmd == "resume":
+        return resume()
+    print(histogram(a.spec, a.hook, a.days) if a.spec else histograms(a.days))
+    return 0
+
+
+if __name__ == "__main__":
+    code = main()
+    # The judge's gate swaps sys.stdout for stderr, so flush the real one.
+    cls.flush_all()
+    # A probe thread stuck resolving an absent .local host holds normal exit.
+    os._exit(code)

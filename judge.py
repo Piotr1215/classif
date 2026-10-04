@@ -1,0 +1,836 @@
+"""A semantic if on a local model: one question, one text, one token.
+
+    classif "is this sarcastic?" "great, another meeting"
+    git log -1 --format=%B | classif "is this a bug fix?"
+    curl -sL https://www.gutenberg.org/cache/epub/1342/pg1342.txt | classif "does Mr. Collins propose to Elizabeth?"
+    crontab -l | classif "does anything run in the next hour?" -c <(echo "Now:"; date)
+    make 2>&1 | classif -p "is this an error?" | ifne claude -p 'root cause?'
+
+One /api/chat call for one token with logprobs. Each label's family (case
+and leading-space variants, or the first piece of a multi-token label) is
+summed and normalized; nothing is generated or parsed. Prints `<label> <p>`,
+or JSON with -j: label, p, confidence ((n*pmax - 1)/(n - 1) over n labels,
+0 at a tie and 1 when one label takes all), T, logp (each label's log mass),
+mass, model, host, ms.
+
+p is tempered when calibration.json beside the script holds a temperature
+T for the model (evals/calibrate.py fits it): softmax(logp / T), with p_raw
+in -j beside it. Raw gemma4:12b says 0.99 on cases it gets wrong; tempered,
+its held-out ECE fell from 0.066 to 0.016 over 200 cases. No label changes
+rank, so the winner and the exit code stay. -e questions use their own
+temperature, T_enum. A model or a kind of question without one keeps its
+raw p.
+
+Labels default to yes,no,unknown: without unknown the model has to pick yes
+or no about a fact the text never states ("is his friend older than me?"
+answered no both ways). SemIf's missing-evidence option plays the same role.
+
+Exit: 0 when the top label is the first label (yes by default), 1 for any
+other label (no or unknown), 2 when unscored (no host, low mass, bad response),
+3 when a long input's pieces did not settle the answer (insufficient).
+With -t P (--min-p), a winner whose p is below P is unsure: exit 3 whichever
+label leads, ` unsure` after the verdict, and a gate that passes nothing.
+
+-e takes options by name and numbers them 1 to 9 behind the scenes: the
+model answers a digit, classif prints the name, so any name scores, even one
+the model would start with a one-character piece (Baggins starts "B").
+Option 0, "none of these", is always added and prints `none`, so a list
+without the answer is not forced onto its nearest name, the enum form of
+unknown. Repeat -e for each option, or list names with commas or newlines,
+so a command can generate the list: -e "$(git branch --format='%(refname:short)')".
+`name=description` is an instruction to the model, not a note for the
+reader: the model reads it as when to pick that option, and classif still
+prints only the name. Unquoted, the shell splits it into words; classif
+joins the words up to the next option or a value holding a space, the form
+a quoted question or text has. A description runs to the next name=, so it may hold commas:
+-e "prod=live customer traffic, mostly EU" -e "staging=pre-release checks".
+In a newline list each line is one option.
+
+With no text argument and nothing piped in, the question is judged alone.
+
+-p makes classif a gate in a pipe: when the first label wins it prints the
+input unchanged, otherwise nothing. At a terminal a dim verdict line goes to
+stderr; off a terminal only unscored reasons do (and the result with -j). Put `ifne` (moreutils) before the next command so
+it runs only on a pass.
+
+Input goes in whole, up to a 32768-token window (about 80k chars of dense
+text, more of prose). Nothing is judged on a fragment: when the server says
+the input is past the window, classif hands it to mem.py beside it, which
+reads it in pieces, keeps what it read outside the prompt, and answers only
+when it read enough. The default labels then judge the question as a claim
+(yes when the text supports it, no when it contradicts it) and -e picks
+among the options over every passage. The hidden -l LABELS, kept for
+evals/eval.py, scores the labels themselves without none, in one read only;
+past the window it exits 2. `insufficient` (exit 3) means the
+pieces did not settle it: the lines that bear on the claim leave it open, a
+deadline cut the reading, or there is too much evidence for one final read.
+It has no label and passes no gate. A claim that names something the text
+names is answered first from the lines linked to it; when they do not settle
+it, every line is read.
+
+-c FILE supplies a context the question is about, a policy or a reference,
+read before the text on every reader and judge call; the text is then the event or record
+the question is asked of. The context must fit the window with the text,
+or with one passage on a long text; past that the server refuses and the
+result is unscored. -i FILE reads the input from a file and names it in the
+-j report; -i A,B or -i A -i B reads several as one input, each on its own
+line after the last, and the report names the range of each. -d SECONDS
+bounds everything, the whole read and the pieces after it. -j then
+adds mode ("direct" or "memory"), verdict and read: what was read, the
+source offsets of what the judge saw, calls and time.
+
+Hosts, earliest reachable wins: CLASSIF_HOSTS=host:port[=model],... when set,
+else ~/.config/classif/hosts with one such entry per line, else localhost:11434.
+A host without a model runs DEFAULT_MODEL; -m overrides both. CLASSIF_TIMEOUT
+(seconds, default 15) bounds the model call; a cold model load takes seconds.
+CLASSIF_CALIBRATION names another calibration file.
+"""
+import argparse
+import importlib.util
+import json
+import math
+import os
+import re
+import socket
+import sys
+import threading
+import time
+import types
+import urllib.error
+import urllib.request
+
+LOCAL_HOST = "localhost:11434"
+# gemma4:12b over llama3.2:3b for ad-hoc questions: llama answers yes to both
+# "is this good?" and "is this bad?" about the same text; gemma does not, and
+# it scores higher in evals/eval.py (15/15 vs 13/15 synthetic, 66/70 vs 60/70
+# RAG). Its raw p saturates near 0 or 1, so the threshold gate of plan #183
+# pins llama3.2:3b with -m, whose raw p is graded and stays untempered.
+# Winnow-12B (EldanRing, a Gemma 4 12B fine-tune for typed decisions) over
+# gemma4:12b, both Q4_K_M through the same gemma4 renderer: 329/344 vs 325/344
+# in evals/eval.py (7 won, 3 lost; email-action 54/60 vs 50/60), held-out NLL
+# 0.166 vs 0.200 on -l, same latency (p50 222 vs 218 ms). Not in the Ollama
+# library; README's setup builds it.
+DEFAULT_MODEL = "winnow:12b-q4_K_M"
+MASS_MIN = 0.5
+# Tokens per request. Ollama's default here is 4096, and past its window it
+# drops the start of the input silently. 32768 keeps whole pages and emails.
+# Loaded on the laptop GPU: gemma4:12b 8.1GB, winnow:12b-q4_K_M 8.0GB,
+# llama3.2:3b 6.0GB; short calls
+# stay fast (~90ms and ~45ms); an 18k-token document took llama 5.4s.
+NUM_CTX = 32768
+# The search index past the window: a text's passages as vectors from a
+# 300M embedding model, built once per text, 170k tokens in 8.5 s on this
+# laptop's GPU against 100 s for the 12B to read them. Each model wants its
+# own prefix on a query and on a passage; a model not listed gets none.
+EMBED_MODEL = "embeddinggemma"
+EMBED_PREFIX = {"embeddinggemma": ("task: search result | query: ", "title: none | text: "),
+                "nomic-embed-text": ("search_query: ", "search_document: ")}
+PROBE_TIMEOUT = 1.0
+# Once any host answers, earlier ones get this long to answer too. It only
+# matters with the first host down: a LAN host answered in 39-171ms over
+# Wi-Fi, a wired one in under 1ms, and an unreachable name hangs.
+GRACE = 0.3
+# Fitted temperatures per model, written by evals/calibrate.py. Beside the
+# script itself, so a symlink on PATH still finds it.
+CALIBRATION = os.path.join(os.path.dirname(os.path.realpath(__file__)), "calibration.json")
+DEFAULT_QUESTION = "Which one fits this text?"
+DEFAULT_LABELS = "yes,no,unknown"
+PROG = "classif"    # the name messages carry
+# A whole read is prompt evaluation: 153k chars that fit the window took
+# gemma4:12b 14.8s here, a hair under CLASSIF_TIMEOUT's default.
+READ_RATE = 2000    # chars a second a whole read is allowed, on top of the default timeout
+
+
+def config_dir():
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "classif")
+
+
+def parse_hosts(entries):
+    """host:port[=model] entries in order, the first of a repeated host kept.
+    A host without a model runs DEFAULT_MODEL; # starts a comment."""
+    out = {}
+    for e in entries:
+        host, _, model = e.split("#", 1)[0].strip().partition("=")
+        if host.strip():
+            out.setdefault(host.strip(), model.strip() or DEFAULT_MODEL)
+    return list(out.items())
+
+
+def hosts():
+    """(host, model) in preference order: CLASSIF_HOSTS, comma separated, when
+    set, else the hosts file in config_dir(), one entry per line, else the
+    local server. The file reaches cron jobs and hooks, which an exported
+    variable may not."""
+    env = os.environ.get("CLASSIF_HOSTS", "").strip()
+    if env:
+        return parse_hosts(env.split(","))
+    try:
+        with open(os.path.join(config_dir(), "hosts")) as fh:
+            listed = parse_hosts(fh.read().splitlines())
+    except OSError:
+        listed = []
+    return listed or [(LOCAL_HOST, DEFAULT_MODEL)]
+
+
+def route(forced=None):
+    """Host to call and the model to run there: the caller's model when
+    given, else the host's own. None for the host when none answered."""
+    cands = hosts()
+    host = pick_host([h for h, _ in cands])
+    return host, forced or dict(cands).get(host)
+
+
+def pick_host(candidates):
+    """Earliest host in the list to accept a TCP connect. Probes run in
+    parallel on daemon threads because an unresolvable .local name blocks in
+    getaddrinfo for seconds, past any socket timeout. Once any host is up,
+    earlier ones still pending get GRACE, then the earliest up host wins."""
+    state = [None] * len(candidates)  # None pending, True up, False down
+    cond = threading.Condition()
+
+    def probe(i, h):
+        name, _, port = h.rpartition(":")
+        try:
+            socket.create_connection((name, int(port)), timeout=PROBE_TIMEOUT).close()
+            up = True
+        except (OSError, ValueError):
+            up = False
+        with cond:
+            state[i] = up
+            cond.notify_all()
+
+    for i, h in enumerate(candidates):
+        threading.Thread(target=probe, args=(i, h), daemon=True).start()
+    deadline = time.monotonic() + PROBE_TIMEOUT + 0.5
+    with cond:
+        while True:
+            first = next((i for i, s in enumerate(state) if s is not False), None)
+            if first is None:
+                return None
+            if state[first]:
+                return candidates[first]
+            if True in state:
+                deadline = min(deadline, time.monotonic() + GRACE)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return next((h for h, s in zip(candidates, state) if s), None)
+            cond.wait(left)
+
+
+def prompt(question, text, labels, options=None, context=None):
+    """Text first, question last, one-word instruction in both turns. Beat a
+    "You are a classifier" framing 13/15 to 9/15 on llama3.2:3b. With options
+    the labels are digits and the question lists what each one stands for.
+    context, a policy or reference the question is about, goes before the
+    text: the same context on every call is then one cached prefix."""
+    choices = " or ".join(labels) if len(labels) == 2 else ", ".join(labels[:-1]) + " or " + labels[-1]
+    system = f"Answer with exactly one word: {choices}."
+    question = question.strip()
+    if options:
+        question += " Options: " + ", ".join(f"{l}={o}" for l, o in zip(labels, options)) + "."
+    body = (f"Context:\n{context}\n\n" if context else "") + (f"Text:\n{text}\n\n" if text else "")
+    user = f"{body}{question} Answer {choices}."
+    return system, user
+
+
+def credit(tok, labels):
+    """Label a first token belongs to, or None. A whole label matches in any
+    case. A multi-token label ("garbage" is "gar"+"bage") only ever shows its
+    first piece, so a piece of 2+ chars that starts exactly one label counts."""
+    t = tok.strip().lower()
+    if not t:
+        return None
+    exact = [l for l in labels if l.lower() == t]
+    if exact:
+        return exact[0]
+    if len(t) < 2:
+        return None
+    pre = [l for l in labels if l.lower().startswith(t)]
+    return pre[0] if len(pre) == 1 else None
+
+
+def families(top, labels):
+    """Each label's family mass: the probability of every token credited to it."""
+    raw = {l: 0.0 for l in labels}
+    for row in top:
+        l = credit(str(row.get("token", "")), labels)
+        if l:
+            raw[l] += math.exp(float(row["logprob"]))
+    return raw
+
+
+def log_mass(top, labels):
+    """Log family mass per label. A label with no token in the list gets the
+    lowest logprob shown, an upper bound on any token past the list."""
+    floor = min(float(row["logprob"]) for row in top)
+    return {l: math.log(v) if v > 0 else floor for l, v in families(top, labels).items()}
+
+
+def score(top, labels):
+    """Family masses normalized over the labels. Returns (p per label, mass)."""
+    raw = families(top, labels)
+    mass = sum(raw.values())
+    if mass <= 0:
+        return {l: 0.0 for l in labels}, 0.0
+    return {l: v / mass for l, v in raw.items()}, mass
+
+
+def temperature(model, enum=False):
+    """The model's fitted temperature, or None: an unfitted model keeps its
+    raw p, so a threshold tuned on it (the #183 gate on llama3.2:3b) holds.
+    -e questions have their own, T_enum: gemma4:12b's -l temperature left
+    its -e answers further from the truth than raw p did."""
+    try:
+        with open(os.environ.get("CLASSIF_CALIBRATION", CALIBRATION)) as fh:
+            t = json.load(fh)[model]["T_enum" if enum else "T"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return float(t) if isinstance(t, (int, float)) and t > 0 else None
+
+
+def calibrate(logp, t):
+    """Temperature scaling: softmax of each label's log mass over t. t > 1
+    softens a model that is surer than it is right, and no label changes
+    rank, so the winner and the exit code stay."""
+    top = max(logp.values())
+    e = {l: math.exp((v - top) / t) for l, v in logp.items()}
+    z = sum(e.values())
+    return {l: v / z for l, v in e.items()}
+
+
+def confidence(pmax, n):
+    """Jev's rescaled top p: 0 when the n labels are a coin toss, 1 when one
+    takes everything. A bare p reads differently with 2 labels than with 10."""
+    return (n * pmax - 1) / (n - 1)
+
+
+def server_error(body):
+    """Ollama's error text. 0.34 wraps llama-server's JSON error as a string
+    inside its own, so unwrap until a plain message is left."""
+    msg = body
+    while True:
+        try:
+            d = json.loads(msg)
+        except (TypeError, ValueError):
+            return msg
+        if not isinstance(d, dict):
+            return msg
+        inner = d.get("error", d)
+        nxt = inner.get("message") if isinstance(inner, dict) else inner
+        if not isinstance(nxt, str):
+            return msg
+        msg = nxt
+
+
+def keep_alive():
+    """How long Ollama keeps the model loaded after a call: CLASSIF_KEEP_ALIVE,
+    else the first line of the keep_alive file in the config dir, as a
+    duration ("2h") or seconds, where -1 keeps it until something unloads it
+    (classif pause does). The file reaches callers whose environment was set
+    before it changed, such as hooks of a running session. Ollama reads "-1"
+    as a bad duration, so a bare number goes out as a number. Unset, 30m."""
+    v = os.environ.get("CLASSIF_KEEP_ALIVE", "").strip()
+    if not v:
+        try:
+            with open(os.path.join(config_dir(), "keep_alive")) as fh:
+                v = fh.readline().strip()
+        except OSError:
+            pass
+    v = v or "30m"
+    try:
+        return int(v)
+    except ValueError:
+        return v
+
+
+def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None):
+    """One scored call, for callers that score many items (classif): pick a
+    host once, then judge each item on it. Without a host it routes like the
+    CLI. num_ctx and timeout let a hot-path caller run a small window (llama
+    at 2048 fits beside gemma4:12b on this laptop's GPU; at 32768 one evicts
+    the other) inside its own budget. Returns {label, p, logp, mass, model,
+    host, ms, T[, p_raw]}, keyed by the labels given, or {label: None,
+    unscored: why[, host, mass]}."""
+    if host is None:
+        host, model = route(model)
+        if not host:
+            return {"label": None, "unscored": "no Ollama host answered: " + ",".join(h for h, _ in hosts())}
+    model = model or dict(hosts()).get(host, DEFAULT_MODEL)
+    system, user = prompt(question.strip() or DEFAULT_QUESTION, text, labels, options, context)
+    body = json.dumps({
+        # think:false keeps a thinking model's position-0 token an answer, not
+        # the start of a reasoning trace; non-thinking models accept it.
+        # truncate:false makes an oversized input an error instead of a silent
+        # cut (0.34.3 and 0.17.0 both honor it).
+        "model": model, "stream": False, "think": False, "logprobs": True, "top_logprobs": 20,
+        "truncate": False, "keep_alive": keep_alive(),
+        "options": {"temperature": 0, "num_predict": 1, "num_ctx": num_ctx},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    }).encode()
+    req = urllib.request.Request(f"http://{host}/api/chat", data=body,
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15"))) as r:
+            resp = json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = server_error(e.read().decode(errors="replace"))[:300]
+        r = {"label": None, "unscored": f"{host} HTTP {e.code}: {detail}", "host": host}
+        if e.code == 400 and "exceeds the available context size" in detail:
+            # "request (193601 tokens) exceeds the available context size (32768 tokens)"
+            r["overflow"] = True
+        return r
+    except (OSError, ValueError) as e:
+        return {"label": None, "unscored": f"{host}: {e}", "host": host}
+    ms = round((time.monotonic() - t0) * 1000)
+
+    try:
+        top = resp["logprobs"][0]["top_logprobs"]
+        if not resp.get("done"):
+            raise KeyError("done")
+    except (KeyError, IndexError, TypeError):
+        return {"label": None, "unscored": f"{host}: response has no logprobs (Ollama too old?)", "host": host}
+
+    p, mass = score(top, labels)
+    if mass < MASS_MIN:
+        seen = ",".join(str(r.get("token", "")).strip() for r in top[:5])
+        return {"label": None, "unscored": f"label mass {mass:.2f} < {MASS_MIN}; model wanted: {seen}",
+                "host": host, "mass": round(mass, 3)}
+
+    label = max(labels, key=lambda l: p[l])
+    logp, t, p_raw = log_mass(top, labels), temperature(model, enum=options is not None), p
+    res = {"label": label, "p": calibrate(logp, t) if t else p, "logp": logp, "mass": mass,
+           "model": model, "host": host, "ms": ms, "T": t}
+    if t:
+        res["p_raw"] = p_raw
+    return res
+
+
+def embed(texts, model=EMBED_MODEL, host=None, timeout=None, query=False):
+    """Unit vectors for the texts from an embedding model, one /api/embed
+    call: {vectors, tokens}, or {vectors: None, unscored: why}, with missing
+    True when the host has no such model, so a caller can say what to pull
+    and read without it. query marks a question; a passage gets the other
+    prefix."""
+    host = host or LOCAL_HOST
+    pre = EMBED_PREFIX.get(model.split(":")[0], ("", ""))[0 if query else 1]
+    body = json.dumps({"model": model, "input": [pre + t for t in texts], "truncate": True,
+                       "keep_alive": keep_alive()}).encode()
+    req = urllib.request.Request(f"http://{host}/api/embed", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15")) * 4) as r:
+            resp = json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = server_error(e.read().decode(errors="replace"))[:300]
+        return {"vectors": None, "unscored": f"{host} HTTP {e.code}: {detail}", "missing": e.code == 404}
+    except (OSError, ValueError) as e:
+        return {"vectors": None, "unscored": f"{host}: {e}"}
+    vectors = resp.get("embeddings") if isinstance(resp, dict) else None
+    if not isinstance(vectors, list) or len(vectors) != len(texts):
+        return {"vectors": None, "unscored": f"{host}: response holds no embeddings for the {len(texts)} texts"}
+    out = []
+    for v in vectors:
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        out.append([x / norm for x in v])
+    return {"vectors": out, "tokens": resp.get("prompt_eval_count", 0)}
+
+
+def dump(obj):
+    """-j output: indented on a terminal, one line in a pipe so a script can
+    read one result per line."""
+    print(json.dumps(obj, indent=2 if sys.stdout.isatty() else None))
+
+
+def unscored(why, as_json, **extra):
+    if as_json:
+        dump({"label": None, "unscored": why, **extra})
+    print(f"{PROG}: unscored: {why}", file=sys.stderr)
+    return 2
+
+
+def memory():
+    """mem.py beside this script, as a module: the path for input past the window."""
+    spec = importlib.util.spec_from_file_location(
+        "classif_mem", os.path.join(os.path.dirname(os.path.realpath(__file__)), "mem.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Help(argparse.HelpFormatter):
+    """Wraps prose paragraphs to the terminal and keeps indented ones, the
+    examples, as written."""
+
+    def _fill_text(self, text, width, indent):
+        return "\n\n".join(p if p.startswith(" ") else super(Help, self)._fill_text(p, width, indent)
+                           for p in text.split("\n\n"))
+
+
+EPILOG = """\
+Output: LABEL P, the winner and its probability; -j for JSON. Exit: 0 when the first option wins (yes), 1 for another, 2 unscored, 3 insufficient or below -t.
+
+Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
+
+    git diff | classif "what kind of change is this?" -e fix=repairs broken behaviour -e feat=adds something new"""
+
+
+def join_descriptions(argv):
+    """The shell splits an unquoted -e description: -e fix=repairs a bug
+    arrives as -e, fix=repairs, a, bug, and the loose words would become the
+    text. Join the words after an unspaced name=... up to the next option or
+    a value holding a space, which the caller quoted and so meant apart."""
+    out, i = [], 0
+    while i < len(argv):
+        out.append(argv[i])
+        i += 1
+        if out[-1] in ("-e", "--enum") and i < len(argv) and "=" in argv[i] and not re.search(r"\s", argv[i]):
+            words = [argv[i]]
+            i += 1
+            while i < len(argv) and argv[i] and not argv[i].startswith("-") and not re.search(r"\s", argv[i]):
+                words.append(argv[i])
+                i += 1
+            out.append(" ".join(words))
+    return out
+
+
+def enum_options(values):
+    """Every -e's options, each "name" or "name=description". A value with a
+    newline holds one option per line, as a command prints them. Otherwise
+    commas separate options, and a description runs to the next name=, so
+    -e "moved=it moved, with a new address" is one option."""
+    out = []
+    for v in values:
+        if "\n" in v:
+            out += v.split("\n")
+            continue
+        first = len(out)
+        for piece in v.split(","):
+            if piece.strip() and len(out) > first and "=" in out[-1] and "=" not in piece:
+                out[-1] += "," + piece
+            else:
+                out.append(piece)
+    return [o for o in out if o.strip()]
+
+
+def main(argv=None, prog="classif"):
+    global PROG
+    PROG = prog
+    # INPUT comes one of three ways; the usage shows all three, so -i reads as filling that slot.
+    ap = argparse.ArgumentParser(prog=prog, description="\n\n".join(__doc__.split("\n\n")[:2]), epilog=EPILOG,
+                                 formatter_class=Help, usage="%(prog)s [options] QUESTION [INPUT]\n"
+                                 "       cmd | %(prog)s [options] QUESTION\n"
+                                 "       %(prog)s [options] QUESTION -i FILE")
+    ap.add_argument("question", nargs="?", default="", metavar="QUESTION",
+                    help=f'what to judge; omitted or "" means "{DEFAULT_QUESTION}"')
+    ap.add_argument("input", nargs="?", metavar="INPUT",
+                    help="what the question is about: a log, a page, a diff. One quoted argument, -i FILE, "
+                         "or stdin")
+    pick = ap.add_mutually_exclusive_group()
+    pick.add_argument("-e", "--enum", action="append", metavar="OPTION",
+                      help="an answer to pick: name, or name=description, which the model reads as when to pick it. "
+                           "Repeat -e or list names with commas; 1 to 9, plus none. Without -e: yes, no, unknown")
+    # The labels themselves, no none: the path the default question and the
+    # specs score on. evals/eval.py and calibrate.py measure it through here.
+    pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
+    ap.add_argument("-j", "--json", action="store_true", help="print the full result as JSON")
+    ap.add_argument("-p", "--pass", dest="gate", action="store_true",
+                    help="gate: pass INPUT through when the first option wins")
+    ap.add_argument("-t", "--min-p", type=float, metavar="P",
+                    help="act only on an answer at least this sure, e.g. -t 0.8; a less sure one prints unsure and "
+                         "exits 3, so && and -p do not fire")
+    ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
+                    help="read INPUT from FILE; repeat -i, or give a.log,b.log, to join several into one INPUT")
+    ap.add_argument("-c", "--context", metavar="FILE",
+                    help="the rules to judge INPUT by, read first: a policy, a reference, or -c <(date)")
+    ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
+                    help="bound all the work; a read cut short exits 3")
+    ap.add_argument("-w", "--why", action="store_true",
+                    help="answer from a line-by-line read and print the lines it rests on; slower, and the answer "
+                         "can differ from the one-call one")
+    ap.add_argument("--cache", action="store_true",
+                    help="save readings, links and the passage index under ~/.cache/classif, so a repeat on the same "
+                         "text reuses them; nothing is written to disk without it")
+    ap.add_argument("extra", nargs="*", help=argparse.SUPPRESS)
+    # Intermixed: positionals may follow options, as in `classif "q?" -e a,b "text"`.
+    given = sys.argv[1:] if argv is None else list(argv)
+    joined = join_descriptions(given)
+    a = ap.parse_intermixed_args(joined)
+    claim = a.enum is None and a.labels == DEFAULT_LABELS
+    if a.deadline is not None and a.deadline <= 0:
+        ap.error(f"-d wants seconds above 0, got {a.deadline}")
+    if a.files is not None and a.input is not None:
+        ap.error("got an input argument and -i; pass one of them")
+    if a.why and not claim and a.enum is None:
+        ap.error("--why answers the default labels and -e; custom -l labels need one whole read")
+    context = None
+    if a.context is not None:
+        try:
+            with open(a.context, "rb") as fh:
+                context = fh.read().decode("utf-8", errors="replace").strip()
+        except OSError as e:
+            ap.error(f"-c {a.context}: {e.strerror}")
+        if not context:
+            ap.error(f"-c {a.context}: the file is empty")
+    if a.min_p is not None and not 0 < a.min_p <= 1:
+        ap.error(f"--min-p wants a p above 0 and at most 1, got {a.min_p}")
+    if a.extra:
+        # A pasted text with its own double quotes reaches us already split by
+        # the shell; nothing here can rejoin it faithfully.
+        ap.error(f"got {2 + len(a.extra)} arguments, want at most 2 (question, text). "
+                 "Quotes inside the text split it; send the text on stdin instead: "
+                 "xsel -ob | classif \"question\"")
+    out = sys.stdout
+    if a.gate:
+        # stdout carries only the passed input; -j output goes to stderr, so
+        # the next command in the pipe sees the data alone.
+        sys.stdout = sys.stderr
+
+    names = options = None
+    if a.enum is not None:
+        opts = [o.partition("=") for o in enum_options(a.enum)]
+        names = [n.strip() for n, _, _ in opts]
+        # One name is enough: none is its alternative, so -e hook is a filter.
+        if not 1 <= len(names) <= 9 or not all(names) or len({n.lower() for n in names}) != len(names):
+            ap.error(f"-e needs 1 to 9 distinct options, got {len(names)}")
+        # Digits are one token each, so any name scores; 10 and up may not be.
+        labels = [str(i) for i in range(1, len(names) + 1)] + ["0"]
+        # The model reads each description; the output carries only the name.
+        options = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
+        options.append("none of these")
+        names.append("none")
+    else:
+        labels = [l.strip() for l in a.labels.split(",") if l.strip()]
+        if len(labels) < 2 or len({l.lower() for l in labels}) != len(labels):
+            ap.error("need at least two distinct labels")
+    show = dict(zip(labels, names or labels))
+    raw, files = a.input, []
+    if a.files is not None:
+        # Several files are one text: each starts where the last ended, on
+        # its own line, and -j names the range each one occupies.
+        parts = []
+        # A name with a comma in it is given with its own -i.
+        for path in [p for group in a.files for p in (group.split(",") if not os.path.exists(group) else [group])
+                     if p]:
+            try:
+                with open(path, "rb") as fh:
+                    part = fh.read().decode("utf-8", errors="replace")
+            except OSError as e:
+                ap.error(f"-i {path}: {e.strerror}")
+            if parts and not parts[-1].endswith("\n"):
+                parts[-1] += "\n"
+            start = sum(len(p) for p in parts)
+            files.append({"file": path, "start": start, "end": start + len(part)})
+            parts.append(part)
+        raw = "".join(parts)
+    elif raw is None or raw == "-":
+        if not sys.stdin.isatty():
+            # head -c cuts mid-character and binaries are not UTF-8 at all;
+            # neither should crash a loop over files.
+            raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        elif a.question.strip():
+            # At a terminal nothing is piped in, so the question stands alone.
+            raw = ""
+        else:
+            ap.error("no input: pass a question, a text, or both")
+    text = raw.strip()
+    if not text and len(joined) < len(given):
+        # A one-word text after an unquoted description reads as its last word.
+        ap.error("the words after an unquoted -e name= were read as its description, and no text is left. "
+                 "Quote the description, or put a one-word text before -e")
+
+    t0 = time.monotonic()
+    if a.why:
+        # The lines an answer rests on come from reading line by line, so a
+        # short text goes to the reader too instead of one whole read.
+        if not text:
+            ap.error("--why points at lines of a text; pass one")
+        host, model = route()
+        if not host:
+            return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
+        return long_input(a, raw, names, options, host, model, t0, out, context, files)
+    wait = a.deadline
+    if wait is None and "CLASSIF_TIMEOUT" not in os.environ:
+        wait = 15 + (len(text) + len(context or "")) / READ_RATE
+    r = judge(a.question, text, labels, options, timeout=wait, context=context)
+    if r["label"] is None and r.get("overflow"):
+        if not text:
+            # Only -c overflowed: past the window the input is read in pieces,
+            # and with no input there is nothing to read, so no answer.
+            return unscored(r["unscored"] + ". -c is context added to every call and must fit the window; "
+                            "pass a long source as the input with -i", a.json, host=r["host"])
+        if not claim and a.enum is None:
+            return unscored(r["unscored"] + ". Past the window only the default labels and -e are answered; "
+                            "custom -l labels need one whole read", a.json, host=r["host"])
+        return long_input(a, raw, names, options, r["host"], dict(hosts()).get(r["host"], DEFAULT_MODEL),
+                          t0, out, context, files)
+    if r["label"] is None and a.deadline is not None and "timed out" in r["unscored"]:
+        if a.json:
+            dump({"label": None, "p": None, "mode": "direct", "verdict": "insufficient",
+                 "why": "deadline passed during the whole read", "host": r["host"]})
+        print(f"{PROG}: insufficient: deadline passed during the whole read", file=sys.stderr)
+        return 3
+    if r["label"] is None:
+        return unscored(r.pop("unscored"), a.json, **{k: v for k, v in r.items() if k != "label"})
+    label, p = r["label"], r["p"]
+    # A winner under --min-p is neither a yes nor a no the caller should act
+    # on: 0.49 and 0.51 would otherwise trigger opposite actions.
+    unsure = a.min_p is not None and p[label] < a.min_p
+    verdict = f"{show[label]} {p[label]:.2f}" + (" unsure" if unsure else "")
+    if a.json:
+        res = {"label": show[label], "p": {show[l]: round(v, 3) for l, v in p.items()},
+               "confidence": round(confidence(p[label], len(labels)), 3),
+               "T": r["T"], "logp": {show[l]: round(v, 3) for l, v in r["logp"].items()},
+               "mass": round(r["mass"], 3), "model": r["model"], "host": r["host"], "ms": r["ms"], "mode": "direct"}
+        if context:
+            res["context"] = a.context
+        if a.min_p is not None:
+            res["unsure"] = unsure
+        if r["T"]:
+            res["p_raw"] = {show[l]: round(v, 3) for l, v in r["p_raw"].items()}
+        dump(res)
+    elif not a.gate:
+        print(verdict)
+    elif sys.stderr.isatty():
+        # A silent gate at a prompt reads as broken: say what it decided, on
+        # stderr so the data passing through stays clean. Scripts stay silent.
+        sys.stderr.write(f"\033[2m{PROG}: {verdict}\033[0m\n")
+    if unsure:
+        return 3
+    if label != labels[0]:
+        return 1
+    if a.gate:
+        out.write(raw)
+    return 0
+
+
+class Progress:
+    """How far a long read is, as one dim line on a terminal redrawn in
+    place: `classif: read 640 of 804 passages, 9 s`. Drawn at most every
+    quarter second, and always when done reaches total; clear() wipes it
+    before the answer prints."""
+
+    def __init__(self, out, t0, every=0.25):
+        self.out, self.t0, self.every, self.last = out, t0, every, None
+
+    def __call__(self, done, total, unit):
+        now = time.monotonic()
+        if done < total and self.last is not None and now - self.last < self.every:
+            return
+        self.last = now
+        self.out.write(f"\r\033[K\033[2m{PROG}: read {done:,} of {total:,} {unit}, {now - self.t0:.0f} s\033[0m")
+        self.out.flush()
+
+    def clear(self):
+        self.out.write("\r\033[K")
+        self.out.flush()
+
+
+def long_input(a, raw, names, options, host, model, t0, out, context=None, files=()):
+    """Answer through mem.py and report in classif's own terms. A claim's
+    verdict becomes a label: supported yes, contradicted no. Anything the
+    pieces did not settle has no label: insufficient, exit 3, no gate passes."""
+    mem = memory()
+    left = None if a.deadline is None else a.deadline - (time.monotonic() - t0)
+    if left is not None and left <= 0:
+        r = {"verdict": "insufficient", "label": None, "p": None, "read": {"why": "deadline passed before reading"}}
+    else:
+        progress = Progress(sys.stderr, t0) if sys.stderr.isatty() else None
+        try:
+            r = mem.answer(types.SimpleNamespace(**globals()), raw, a.question, host, model,
+                           names[:-1] if names else None, options[:-1] if options else None,
+                           "auto", False, False, left, cache=a.cache, context=context, progress=progress,
+                           evidence=a.why)
+        finally:
+            if progress:
+                progress.clear()
+    read, first = r["read"], names[0] if names else "yes"
+    if ((read.get("search") or {}).get("index") or {}).get("missing"):
+        print(f"{PROG}: ollama pull {EMBED_MODEL} lets a question read the passages closest to it first, "
+              "seconds instead of minutes", file=sys.stderr)
+    if files and read.get("evidence"):
+        read["evidence"] = in_files(read["evidence"], raw, files)
+    read["file"] = ",".join(f["file"] for f in files) if files else "-"
+    if len(files) > 1:
+        read["files"] = list(files)
+    if names:
+        label = r["label"] if r["verdict"] in ("answered", "none") else None
+    else:
+        label = {"supported": "yes", "contradicted": "no"}.get(r["verdict"])
+    p = r["p"] if label and r["p"] else None
+    unsure = bool(a.min_p is not None and p and p[label] < a.min_p)
+    verdict = (label or r["verdict"]) + (f" {p[label]:.2f}" if p else "") + (" unsure" if unsure else "")
+    if a.json:
+        res = {"label": label, "p": {k: round(v, 3) for k, v in p.items()} if p else None,
+               "confidence": round(confidence(p[label], len(p)), 3) if p else None,
+               "mode": "memory", "verdict": r["verdict"], "read": read, "model": model, "host": host,
+               "ms": round((time.monotonic() - t0) * 1000)}
+        if context:
+            res["context"] = a.context
+        if r["verdict"] == "unscored":
+            res["unscored"] = read["why"]
+        if a.min_p is not None:
+            res["unsure"] = unsure
+        dump(res)
+    elif not a.gate and r["verdict"] != "unscored":
+        print(verdict)
+    if r["verdict"] == "unscored":
+        print(f"{PROG}: unscored: {read['why']}", file=sys.stderr)
+        return 2
+    if a.why and not a.json:
+        # Under a gate stdout carries the text, so the lines go to stderr.
+        print("\n".join(why_lines(read)), file=sys.stderr if a.gate else sys.stdout)
+    if label is None or sys.stderr.isatty():
+        # What the answer rests on, or why there is none. Scripts with an answer stay silent.
+        line = mem.report(read) if "calls" in read else read["why"]
+        dim = ("\033[2m", "\033[0m") if sys.stderr.isatty() else ("", "")
+        sys.stderr.write(f"{dim[0]}{PROG}: {verdict}: {line}{dim[1]}\n")
+    if label is None or unsure:
+        return 3
+    if label != first:
+        return 1
+    if a.gate:
+        out.write(raw)
+    return 0
+
+
+def in_files(evidence, raw, files):
+    """Evidence runs as lines of the files they came from: each run gets its
+    file and that file's own line numbers, split where one file ends and the
+    next begins. Each file starts on its own line of the joined text."""
+    starts = [raw.count("\n", 0, f["start"]) + 1 for f in files]
+    out = []
+    for e in evidence:
+        lines = e["text"].split("\n")
+        for k, f in enumerate(files):
+            lo, hi = starts[k], starts[k + 1] - 1 if k + 1 < len(files) else math.inf
+            a, b = max(e["line"], lo), min(e["end"], hi)
+            if a <= b:
+                out.append({"file": f["file"], "line": a - lo + 1, "end": b - lo + 1,
+                            "text": "\n".join(lines[a - e["line"]:b - e["line"] + 1])})
+    return out
+
+
+def why_lines(read):
+    """--why's report: each run of lines the answer rests on as `  LINE: text`,
+    or what it rests on when no line does."""
+    if not read.get("evidence"):
+        return ["  (answered from counted facts and a sample, not from lines)" if read.get("basis") == "sample"
+                else "  (no line reads for or against it)"]
+    out = []
+    for e in read["evidence"]:
+        at = str(e["line"]) if e["end"] == e["line"] else f"{e['line']}-{e['end']}"
+        if e.get("file"):
+            at = f"{e['file']}:{at}"
+        first, *rest = e["text"].split("\n")
+        out += [f"  {at}: {first}"] + [" " * (len(at) + 4) + l for l in rest]
+    return out
+
+
+def flush_all():
+    """A reader that leaves early (`| head -1`) closes the pipe; the verdict
+    is the exit code and stands without the rest of the output."""
+    for stream in (sys.__stdout__, sys.stderr):
+        try:
+            stream.flush()
+        except BrokenPipeError:
+            pass

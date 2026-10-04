@@ -1,0 +1,127 @@
+{
+  "note": "Tester-authored logical fixtures for executable plans. Expected outcomes are not model measurements. Each fixture describes a frozen snapshot unless stream_complete is false.",
+  "labels": ["supported", "contradicted", "insufficient"],
+  "cases": [
+    {
+      "id": "exists-witness",
+      "question": "At least one invoice is unpaid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is unpaid.",
+      "operation": "exists",
+      "expected": "supported",
+      "partial_span_ids": [1],
+      "partial_expected": "supported",
+      "reason": "One verified witness establishes this existential claim over the frozen snapshot."
+    },
+    {
+      "id": "exists-no-witness-partial",
+      "question": "At least one invoice is unpaid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is unpaid.",
+      "operation": "exists",
+      "expected": "supported",
+      "partial_span_ids": [0],
+      "partial_expected": "insufficient",
+      "reason": "A paid example cannot prove there are no unpaid invoices."
+    },
+    {
+      "id": "all-counterexample",
+      "question": "Every invoice is paid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is unpaid.",
+      "operation": "all",
+      "expected": "contradicted",
+      "partial_span_ids": [1],
+      "partial_expected": "contradicted",
+      "reason": "One verified counterexample refutes this universal claim."
+    },
+    {
+      "id": "all-positive-partial",
+      "question": "Every invoice is paid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is unpaid.",
+      "operation": "all",
+      "expected": "contradicted",
+      "partial_span_ids": [0],
+      "partial_expected": "insufficient",
+      "reason": "A confident positive on the paid example is unsafe without the remaining record."
+    },
+    {
+      "id": "all-complete-success",
+      "question": "Every invoice is paid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is paid.",
+      "operation": "all",
+      "expected": "supported",
+      "partial_span_ids": [0],
+      "partial_expected": "insufficient",
+      "reason": "Success requires every applicable invoice to be checked."
+    },
+    {
+      "id": "distinct-count-versus-row-count",
+      "question": "Exactly two distinct invoices are paid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-A is paid.\nInvoice INV-B is paid.",
+      "operation": "count_distinct",
+      "expected": "supported",
+      "partial_span_ids": [0, 1],
+      "partial_expected": "insufficient",
+      "reason": "Count entity keys, preserve source multiplicity, and cover the whole applicable set."
+    },
+    {
+      "id": "latest-not-last",
+      "question": "As of 2026-10-02, invoice INV-42 is paid.",
+      "state": "2026-10-02: Invoice INV-42 is paid.\n2026-01-01: Invoice INV-42 is unpaid.",
+      "operation": "latest",
+      "expected": "supported",
+      "partial_span_ids": [1],
+      "partial_expected": "insufficient",
+      "reason": "Source order and chronological order differ."
+    },
+    {
+      "id": "latest-tied-conflict",
+      "question": "As of 2026-10-02, invoice INV-42 is paid.",
+      "state": "2026-10-02: Invoice INV-42 is paid.\n2026-10-02: Invoice INV-42 is unpaid.",
+      "operation": "latest",
+      "expected": "insufficient",
+      "partial_span_ids": [0],
+      "partial_expected": "insufficient",
+      "reason": "Equal timestamps with contradictory values need an explicit precedence rule."
+    },
+    {
+      "id": "join-four-facts",
+      "question": "Invoice INV-42 requires approval under Policy P7.",
+      "state": "Invoice INV-42 belongs to customer C9.\nCustomer C9 is in approval category A7.\nPolicy P7 requires approval for category A7 invoices above 1000 EUR.\nInvoice INV-42 has a total of 1500 EUR.",
+      "operation": "join",
+      "expected": "supported",
+      "partial_span_ids": [0, 3],
+      "partial_expected": "insufficient",
+      "reason": "Single-span labels do not supply the two missing relations."
+    },
+    {
+      "id": "paraphrase-no-literal-hit",
+      "question": "The invoice has been paid in full.",
+      "state": "The bill was settled without any remaining balance.",
+      "operation": "semantic_check",
+      "expected": "supported",
+      "partial_span_ids": [],
+      "partial_expected": "insufficient",
+      "reason": "Lexical misses cannot stand in for semantic absence."
+    },
+    {
+      "id": "pronoun-reversal",
+      "question": "Invoice INV-42 currently remains paid.",
+      "state": "Invoice INV-42 was paid.\nThat payment was later reversed and remains unpaid.",
+      "operation": "semantic_join",
+      "expected": "contradicted",
+      "partial_span_ids": [0],
+      "partial_expected": "insufficient",
+      "reason": "The decisive update does not repeat the identifier."
+    },
+    {
+      "id": "unfinished-stream",
+      "question": "Every invoice is paid.",
+      "state": "Invoice INV-A is paid.\nInvoice INV-B is paid.",
+      "operation": "all",
+      "stream_complete": false,
+      "expected": "insufficient",
+      "partial_span_ids": [0, 1],
+      "partial_expected": "insufficient",
+      "reason": "Reading every available span does not cover a stream that may still append an unpaid invoice."
+    }
+  ]
+}
