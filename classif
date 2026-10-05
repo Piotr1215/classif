@@ -237,9 +237,12 @@ def make_row(name, spec, host, meta, key, aux, res, decision):
 def pause():
     """Give the GPU to something else (the EVE launch wrapper calls this):
     write the pause file every consumer checks, then unload each loaded model
-    a spec names from the spec's hosts. resume() removes the file, and the
-    next call loads the model again. Hooks run in other processes, so an
-    environment variable set by the caller could not reach them."""
+    classif names (the hosts' models, the specs' models, the embedder) from
+    the judge's hosts and the specs' own. Ad hoc questions pin the hosts'
+    model under keep_alive -1, so specs alone miss it. resume() removes the
+    file, and the next call loads the model again. Hooks run in other
+    processes, so an environment variable set by the caller could not reach
+    them."""
     os.makedirs(os.path.dirname(pause_path()), exist_ok=True)
     open(pause_path(), "w").close()
     specs = []
@@ -248,14 +251,20 @@ def pause():
             specs.append(load_spec(name))
         except (OSError, ValueError):
             continue
-    env = [h for h, _ in cls.parse_hosts(os.environ.get("CLASSIF_HOSTS", "").split(","))]
-    hosts = env or sorted({h for sp in specs for h in sp.get("hosts", [])})
-    models = {sp["model"] for sp in specs}
+    judged = cls.hosts()
+    hosts = [h for h, _ in judged]
+    if not os.environ.get("CLASSIF_HOSTS", "").strip():
+        hosts += sorted({h for sp in specs for h in sp.get("hosts", [])} - set(hosts))
+
+    def tagged(m):
+        return m if ":" in m.rsplit("/", 1)[-1] else m + ":latest"
+
+    models = {tagged(m) for m in [m for _, m in judged] + [sp["model"] for sp in specs] + [cls.EMBED_MODEL]}
     for host in hosts:
         try:
             with urllib.request.urlopen(f"http://{host}/api/ps", timeout=2) as r:
                 resident = {m.get("model", m.get("name")) for m in json.load(r).get("models") or []}
-            for m in sorted(models & resident):
+            for m in sorted(m for m in resident if tagged(m) in models):
                 req = urllib.request.Request(f"http://{host}/api/generate",
                                              data=json.dumps({"model": m, "keep_alive": 0}).encode(),
                                              headers={"Content-Type": "application/json"})
@@ -451,7 +460,7 @@ def main():
     c.add_argument("fields", nargs="+")
     sm = sub.add_parser("smoke", help="check a spec's smoke rows on a live model")
     sm.add_argument("spec")
-    sub.add_parser("pause", help="stop every consumer and unload spec models, e.g. while a game needs the GPU")
+    sub.add_parser("pause", help="stop every consumer and unload the models classif loads, e.g. while a game needs the GPU")
     sub.add_parser("resume", help="undo pause")
     h = sub.add_parser("histogram", help="p histogram from the log, with the valley; no spec lists what the log holds")
     h.add_argument("spec", nargs="?", help="spec to draw; omit to list the spec and hook pairs with rows")

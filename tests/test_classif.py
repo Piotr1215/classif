@@ -337,6 +337,23 @@ class PauseTests(Base):
             self.assertEqual(self.sf.classify("rag-relevance", ["query=q", "chunk=c"]), 1)
         self.assertEqual(len(fake.requests), 1)
 
+    def test_pause_without_specs_unloads_the_hosts_file_models_and_the_embedder(self):
+        # Ad hoc questions pin the hosts file's model with keep_alive -1, so a
+        # pause that only read specs left it holding the GPU.
+        fake = ResidentOllama(lambda user: SURE_NO,
+                              loaded=[{"model": "winnow:12b-q4_K_M"}, {"model": "embeddinggemma:latest"},
+                                      {"model": "qwen2.5:7b"}])
+        self.addCleanup(fake.close)
+        (self.tmp / "specs" / "rag-relevance.json").unlink()
+        (self.tmp / "config" / "classif").mkdir(parents=True)
+        (self.tmp / "config" / "classif" / "hosts").write_text(fake.host + "\n")
+        os.environ.pop("CLASSIF_HOSTS", None)
+        os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.sf.pause(), 0)
+        self.assertEqual(fake.unloads, [{"model": "embeddinggemma:latest", "keep_alive": 0},
+                                        {"model": "winnow:12b-q4_K_M", "keep_alive": 0}])
+
 
 class ClassifyTests(Base):
     """One item from the command line: the verdict on stdout, the first
