@@ -37,7 +37,7 @@ kind     asks me  0.99
 ```
 
 - `NAME=OPTIONS`: the name is what the model reads, a word or a whole question. Options are split by commas or newlines, 1 to 9 of them, plus `none`. Option descriptions are not supported.
-- `-i`, `-c`, `-j`, `-t` and `-d` work as for a question. `-j` keys each question by its name, with `label`, `p`, `confidence` and `mass`.
+- `-i`, `-c`, `-j`, `-t` and `-d` work as for a question. `-j` keys each question by its name, with `label`, `p`, `confidence` and `mass`, unrounded, and adds the response's `done_reason` and generated `tokens`. A response cut by its token budget (`done_reason: length`) names the cut on each question it left unanswered.
 - Exit 0 when every question is answered, 2 when any is unscored, 3 when any answer is under `-t`. A text past the window is unscored: ask one question at a time to read it in pieces.
 
 The call carries a JSON schema in `format`. The grammar writes each name as a key, the model writes a digit after it, and that digit's top 20 logprobs score the question as with `-e`. Answers are matched by key, not by position. `p` is raw: no temperature is fitted for this path, so it sits closer to 0 and 1 than a calibrated `-e` answer.

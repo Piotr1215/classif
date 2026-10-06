@@ -96,6 +96,39 @@ class TagTests(unittest.TestCase):
             self.assertEqual(r.returncode, 3, (p, floor))
             self.assertTrue(r.stdout.endswith(" unsure\n"), (p, floor))
 
+    def test_an_answer_at_min_p_or_past_it_passes(self):
+        # 0.80045 rounds to 0.800, under -t 0.8004; the unrounded p is past it.
+        for top, floor in (({"1": 1.0}, "1"), ({"1": 0.80045, "2": 0.19955}, "0.8004")):
+            fake = self.serve(keyed('{"', "kind", '":', ("1", top), "}"))
+            r = run(fake.host, "tag", "-t", floor, KIND, stdin=MAIL)
+            self.assertEqual(r.returncode, 0, floor)
+            self.assertNotIn("unsure", r.stdout)
+
+    def test_json_keeps_p_unrounded(self):
+        fake = self.serve(keyed('{"', "kind", '":', ("1", {"1": 0.9996, "2": 0.0004}), "}"))
+        kind = json.loads(run(fake.host, "tag", "-j", "-t", "1", KIND, stdin=MAIL).stdout)["tags"]["kind"]
+        self.assertAlmostEqual(kind["p"]["asks me"], 0.9996, places=9)
+        self.assertIs(kind["unsure"], True)
+
+    def test_a_response_cut_by_its_token_budget_says_so(self):
+        fake = self.serve(keyed('{"', "urgency", '":', ("1", {"1": 0.9, "2": 0.1}), ',"', "ki"))
+        fake.reply[1].update(done_reason="length", eval_count=6)
+        r = run(fake.host, "tag", URGENCY, KIND, stdin=MAIL)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("kind: unscored: the response stopped at its 6-token budget before this answer", r.stderr)
+        fake.reply = keyed('{"', "urgency", '":', ("1", {"1": 0.9, "2": 0.1}), ',"', "ki")
+        fake.reply[1].update(done_reason="length", eval_count=6)
+        d = json.loads(run(fake.host, "tag", "-j", URGENCY, KIND, stdin=MAIL).stdout)
+        self.assertEqual((d["done_reason"], d["tokens"]), ("length", 6))
+
+    def test_a_name_outside_the_vocabulary_is_answered(self):
+        # Ollama 0.34.3 returned each U+20000 of the key as one token string.
+        name = "\U00020000" * 12
+        fake = self.serve(keyed('{"', *["\U00020000"] * 12, '":', ("1", {"1": 0.9, "2": 0.1}),
+                                ',"', "kind", '":', ("2", {"2": 0.8, "1": 0.2}), "}"))
+        r = run(fake.host, "tag", name + "=a,b", KIND, stdin=MAIL)
+        self.assertEqual((r.returncode, r.stdout), (0, f"{name}  a    0.90\nkind          fyi  0.80\n"))
+
     def test_the_token_budget_covers_names_written_a_byte_per_token(self):
         # Twelve U+20000 and kind took Winnow 57 generated tokens; a budget of
         # characters gave it 40 and cut the first key.
@@ -108,8 +141,10 @@ class TagTests(unittest.TestCase):
         d = json.loads(run(fake.host, "tag", "-j", URGENCY, KIND, stdin=MAIL).stdout)
         self.assertEqual(list(d["tags"]), ["urgency", "kind"])
         kind = d["tags"]["kind"]
-        self.assertEqual((kind["label"], kind["p"]), ("asks me", {"asks me": 0.8, "fyi": 0.0, "newsletter": 0.2, "none": 0.0}))
-        self.assertEqual(kind["confidence"], round((4 * 0.8 - 1) / 3, 3))
+        self.assertEqual((kind["label"], list(kind["p"])), ("asks me", ["asks me", "fyi", "newsletter", "none"]))
+        for o, want in (("asks me", 0.8), ("fyi", 0.0), ("newsletter", 0.2), ("none", 0.0)):
+            self.assertAlmostEqual(kind["p"][o], want, places=9)
+        self.assertAlmostEqual(kind["confidence"], (4 * 0.8 - 1) / 3, places=9)
         self.assertEqual(d["host"], fake.host)
 
     def test_input_and_context_come_from_files(self):

@@ -120,7 +120,7 @@ See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions
 
 ## Architecture
 
-Every decision call predicts one token; classif reads label scores from its log probabilities. The only other model call is the embedding model behind the search index, which predicts nothing. Code groups token variants, applies any fitted calibration and formats the result. The answer is bounded, but the model must still evaluate the input prompt.
+A question's decision call predicts one token; classif reads label scores from its log probabilities. `classif tag` instead generates a short JSON object, one key and one digit per question, and reads each digit's log probabilities. The only other model call is the embedding model behind the search index, which predicts nothing. Code groups token variants, applies any fitted calibration and formats the result. The answer is bounded, but the model must still evaluate the input prompt.
 
 Short inputs use one whole-input call. `truncate: false` makes the server reject overflow. Only confirmed overflow starts the external-memory executor.
 

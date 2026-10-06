@@ -478,10 +478,14 @@ def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx
     if not isinstance(resp.get("logprobs"), list) or not resp.get("done"):
         return {"label": None, "unscored": f"{host}: response has no logprobs (Ollama too old?)", "host": host}
     found = answers(resp["logprobs"])
+    stopped, tokens = resp.get("done_reason"), resp.get("eval_count")
+    missing = "no answer for it in the response"
+    if stopped == "length":
+        missing = f"the response stopped at its {tokens}-token budget before this answer"
     tags = {}
     for name, opts in facets:
         if name not in found:
-            tags[name] = {"label": None, "unscored": "no answer for it in the response"}
+            tags[name] = {"label": None, "unscored": missing}
             continue
         labels = [str(i) for i in range(1, len(opts) + 1)] + ["0"]
         p, mass = score(found[name], labels)
@@ -490,7 +494,7 @@ def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx
             continue
         p = {o: p[l] for l, o in zip(labels, opts + ["none"])}
         tags[name] = {"label": max(p, key=p.get), "p": p, "mass": mass}
-    return {"tags": tags, "model": model, "host": host, "ms": resp["ms"]}
+    return {"tags": tags, "model": model, "host": host, "ms": resp["ms"], "done_reason": stopped, "tokens": tokens}
 
 
 def embed(texts, model=EMBED_MODEL, host=None, timeout=None, query=False):
@@ -697,12 +701,10 @@ def tag_main(argv, prog="classif tag"):
             code = 2
             continue
         if a.min_p is not None:
-            # Before rounding: 0.9996 prints as 1.00 and is still under -t 1.
             t["unsure"] = t["p"][t["label"]] < a.min_p
             code = code or (3 if t["unsure"] else 0)
-        t["confidence"] = round(confidence(t["p"][t["label"]], len(t["p"])), 3)
-        t["p"] = {o: round(v, 3) for o, v in t["p"].items()}
-        t["mass"] = round(t["mass"], 3)
+        # Unrounded for programs: a p that prints as 1.00 can still be under -t 1.
+        t["confidence"] = confidence(t["p"][t["label"]], len(t["p"]))
     if a.json:
         dump({**r, **({"context": a.context} if context else {})})
     else:
