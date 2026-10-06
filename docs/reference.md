@@ -44,13 +44,18 @@ The call carries a JSON schema in `format`. The grammar writes each name as a ke
 
 Each question adds about five generated tokens plus one per token of its name, about 20 ms each on the eval GPU, so short names are cheaper. A separate call reads the whole text again, so `tag` gains as the text grows.
 
-Measured 2026-10-06 on `winnow:12b-q4_K_M`:
+Measured 2026-10-06 on `winnow:12b-q4_K_M` with `evals/tag_eval.py`: two labeled questions per text, `tag` in both orders, each question alone through `-e` with the same wording and option names.
 
 | Case | `tag` | One `-e` call per question |
 | --- | ---: | ---: |
-| 55 emails, "newsletter?" and "needs a reply?" in both orders, correct | 210/220 | 208/220 |
-| Three questions, 150-char mail | 900 ms | 660-800 ms |
-| Three questions, 44K-char document | 2.2 s | 4.4 s |
+| 55 emails, whole questions ("Is this email a newsletter?"), correct | 210/220 | 208/220 |
+| 55 emails, short names (`newsletter`, `needs reply or action`), correct | 207/220 | 170/220 |
+| 36 authored144 texts, two claims each, option names without descriptions, correct | 137/144 | 138/144 |
+| Model ms per text: short names, whole questions, authored claims | 639, 906, 1068 | 945, 886, 360 |
+| Wall time, three questions, 150-char mail | 900 ms | 660-800 ms |
+| Wall time, three questions, 44K-char document | 2.2 s | 4.4 s |
+
+The second answer held up in every set: 104, 103 and 68 right at position 2 against 103, 107 and 69 at position 1. With short names, `-e` got 37 fewer right than `tag`. Raw `tag` p sat further from the truth than tempered `-e` p on the authored claims (ECE 0.048 against 0.021) and closer on the emails (0.030 against 0.033). The authored claims are long names, so `tag` cost three times the two short-text calls.
 
 Bare digits without keys ("12") let the second answer copy the first: "needs a reply?" asked after "newsletter?" agreed with its own call 16 times in 55, keyed 51. Pretty-printed JSON spent 28 generated tokens on three questions; the prompt asks for one line, which takes 15.
 
@@ -177,6 +182,7 @@ python3 -m unittest discover -s tests   # fake Ollama and injected readers; no m
 python3 -m unittest discover -s tests/e2e   # the real command, replayed from tests/e2e/cassette.json; no model
 CLASSIF_E2E=record python3 -m unittest discover -s tests/e2e   # record it again against the routed model
 evals/eval.py MODEL [HOST]              # accuracy, Brier, latency per task
+evals/tag_eval.py MODEL [HOST]          # tag against one -e call per question, per answer position
 ```
 
 The e2e tests run `classif` and its subcommands as a subprocess, each test in its own spec dir and log, through a local proxy that stands in for Ollama. By default the proxy replays `tests/e2e/cassette.json`, so the suite needs no model and no network and runs in about 6 seconds. A request the cassette does not hold fails its test: a changed prompt, option or text needs a new recording. `CLASSIF_E2E=record` forwards to the host and model classif routes to (`CLASSIF_HOSTS=host:port=model` picks one) and rewrites the cassette; `CLASSIF_E2E=live` forwards and keeps nothing. The cassette leaves out timestamps and durations, so two recordings of one model are byte-identical and a new recording diffs only where an answer changed.
