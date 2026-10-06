@@ -26,6 +26,34 @@ Exit 0 means the first label won; exit 1 means another label won. Exit 2 means u
 
 The direct path sends one Ollama `/api/chat` request with `num_predict: 1`, `temperature: 0`, `think: false` and `top_logprobs: 20`. It sums label token probabilities, including case and leading-space variants, then normalizes them into `p`. Labels holding less than half the reported probability yield an unscored result. The 32,768-token window is enforced with `truncate: false`. An overflow triggers bounded reads rather than judging a truncated fragment. Without `-d` or `CLASSIF_TIMEOUT`, the whole-input request allows 15 seconds plus one second per 2000 input characters; this is a timeout allowance, not a token-count estimate. The imported `judge()` function remains a single bounded call.
 
+## Several questions, one text
+
+`classif tag NAME=OPTIONS ...` asks every question about one text in a single call, so the text is read once. The text comes from stdin or `-i FILE`, never an argument.
+
+```sh
+classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter' -i mail.txt
+urgency  today    0.98
+kind     asks me  0.99
+```
+
+- `NAME=OPTIONS`: the name is what the model reads, a word or a whole question. Options are split by commas or newlines, 1 to 9 of them, plus `none`. Option descriptions are not supported.
+- `-i`, `-c`, `-j`, `-t` and `-d` work as for a question. `-j` keys each question by its name, with `label`, `p`, `confidence` and `mass`.
+- Exit 0 when every question is answered, 2 when any is unscored, 3 when any answer is under `-t`. A text past the window is unscored: ask one question at a time to read it in pieces.
+
+The call carries a JSON schema in `format`. The grammar writes each name as a key, the model writes a digit after it, and that digit's top 20 logprobs score the question as with `-e`. Answers are matched by key, not by position. `p` is raw: no temperature is fitted for this path, so it sits closer to 0 and 1 than a calibrated `-e` answer.
+
+Each question adds about five generated tokens plus one per token of its name, about 20 ms each on the eval GPU, so short names are cheaper. A separate call reads the whole text again, so `tag` gains as the text grows.
+
+Measured 2026-10-06 on `winnow:12b-q4_K_M`:
+
+| Case | `tag` | One `-e` call per question |
+| --- | ---: | ---: |
+| 55 emails, "newsletter?" and "needs a reply?" in both orders, correct | 210/220 | 208/220 |
+| Three questions, 150-char mail | 900 ms | 660-800 ms |
+| Three questions, 44K-char document | 2.2 s | 4.4 s |
+
+Bare digits without keys ("12") let the second answer copy the first: "needs a reply?" asked after "newsletter?" agreed with its own call 16 times in 55, keyed 51. Pretty-printed JSON spent 28 generated tokens on three questions; the prompt asks for one line, which takes 15.
+
 ## Long-input claims
 
 ```text

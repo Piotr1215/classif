@@ -343,29 +343,18 @@ def keep_alive():
         return v
 
 
-def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None):
-    """One scored call, for callers that score many items (classif): pick a
-    host once, then judge each item on it. Without a host it routes like the
-    CLI. num_ctx and timeout let a hot-path caller run a small window (llama
-    at 2048 fits beside gemma4:12b on this laptop's GPU; at 32768 one evicts
-    the other) inside its own budget. Returns {label, p, logp, mass, model,
-    host, ms, T[, p_raw]}, keyed by the labels given, or {label: None,
-    unscored: why[, host, mass]}."""
-    if host is None:
-        host, model = route(model)
-        if not host:
-            return {"label": None, "unscored": "no Ollama host answered: " + ",".join(h for h, _ in hosts())}
-    model = model or dict(hosts()).get(host, DEFAULT_MODEL)
-    system, user = prompt(question.strip() or DEFAULT_QUESTION, text, labels, options, context)
+def chat(host, model, system, user, options, timeout=None, **extra):
+    """One /api/chat call at temperature 0 with top_logprobs: the response with
+    its ms, or {label: None, unscored, host[, overflow]}. extra goes into the
+    request as is (tag's format)."""
     body = json.dumps({
         # think:false keeps a thinking model's position-0 token an answer, not
         # the start of a reasoning trace; non-thinking models accept it.
         # truncate:false makes an oversized input an error instead of a silent
         # cut (0.34.3 and 0.17.0 both honor it).
         "model": model, "stream": False, "think": False, "logprobs": True, "top_logprobs": 20,
-        "truncate": False, "keep_alive": keep_alive(),
-        "options": {"temperature": 0, "num_predict": 1, "num_ctx": num_ctx},
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "truncate": False, "keep_alive": keep_alive(), "options": {"temperature": 0, **options},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], **extra,
     }).encode()
     req = urllib.request.Request(f"http://{host}/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
@@ -382,7 +371,30 @@ def judge(question, text, labels, options=None, model=None, host=None, num_ctx=N
         return r
     except (OSError, ValueError) as e:
         return {"label": None, "unscored": f"{host}: {e}", "host": host}
-    ms = round((time.monotonic() - t0) * 1000)
+    if not isinstance(resp, dict):
+        return {"label": None, "unscored": f"{host}: response is not a JSON object", "host": host}
+    resp["ms"] = round((time.monotonic() - t0) * 1000)
+    return resp
+
+
+def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None):
+    """One scored call, for callers that score many items (classif): pick a
+    host once, then judge each item on it. Without a host it routes like the
+    CLI. num_ctx and timeout let a hot-path caller run a small window (llama
+    at 2048 fits beside gemma4:12b on this laptop's GPU; at 32768 one evicts
+    the other) inside its own budget. Returns {label, p, logp, mass, model,
+    host, ms, T[, p_raw]}, keyed by the labels given, or {label: None,
+    unscored: why[, host, mass]}."""
+    if host is None:
+        host, model = route(model)
+        if not host:
+            return {"label": None, "unscored": "no Ollama host answered: " + ",".join(h for h, _ in hosts())}
+    model = model or dict(hosts()).get(host, DEFAULT_MODEL)
+    system, user = prompt(question.strip() or DEFAULT_QUESTION, text, labels, options, context)
+    resp = chat(host, model, system, user, {"num_predict": 1, "num_ctx": num_ctx}, timeout)
+    if "unscored" in resp:
+        return resp
+    ms = resp.pop("ms")
 
     try:
         top = resp["logprobs"][0]["top_logprobs"]
@@ -404,6 +416,79 @@ def judge(question, text, labels, options=None, model=None, host=None, num_ctx=N
     if t:
         res["p_raw"] = p_raw
     return res
+
+
+def tag_request(facets, text, context=None):
+    """System, user and the JSON schema for several questions over one text.
+    facets: [(name, [option, ...])]. The schema makes the grammar write each
+    name as a key before its digit, which keeps the answers apart: with bare
+    digits ("12") the second answer copied the first. On 55 emails, "needs a
+    reply?" asked after "newsletter?" agreed with its own call 16 times
+    bare and 51 times keyed. Each question numbers its options from 1; 0 is
+    none of these, as with -e."""
+    lines = [f"{name}: Options: " + ", ".join(f"{i}={o}" for i, o in enumerate(opts, 1)) + ", 0=none of these."
+             for name, opts in facets]
+    body = (f"Context:\n{context}\n\n" if context else "") + f"Text:\n{text}\n\n"
+    schema = {"type": "object", "required": [n for n, _ in facets],
+              "properties": {n: {"type": "integer", "enum": list(range(1, len(o) + 1)) + [0]} for n, o in facets}}
+    # One line without spaces: pretty-printed, the model spent 28 generated
+    # tokens on three questions instead of 15, at about 20 ms each.
+    system = "Answer with a JSON object on one line, without spaces, giving each question's option number."
+    return system, body + "\n".join(lines), schema
+
+
+KEY_BEFORE = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:\s*$')
+
+
+def answers(steps):
+    """Each key's answer position: {key: top_logprobs}. An answer is a
+    one-digit token right after `"key":`, the key read back from the text
+    before it, so neither the order the keys come in nor a digit inside a
+    key misplaces one."""
+    out, text = {}, ""
+    for step in steps:
+        tok = str(step.get("token", ""))
+        key = KEY_BEFORE.search(text)
+        if key and len(tok.strip()) == 1 and tok.strip().isdigit():
+            out.setdefault(json.loads(f'"{key.group(1)}"'), step.get("top_logprobs") or [])
+        text += tok
+    return out
+
+
+def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx=NUM_CTX):
+    """Several questions over one text in one call, the text read once.
+    Returns {tags: {name: {label, p, mass} or {label: None, unscored}}, model,
+    host, ms}, p keyed by option names plus none, or the failed call's
+    {label: None, unscored[, overflow]}. p is raw: no temperature is fitted
+    for an answer read this way."""
+    if host is None:
+        host, model = route(model)
+        if not host:
+            return {"label": None, "unscored": "no Ollama host answered: " + ",".join(h for h, _ in hosts())}
+    model = model or dict(hosts()).get(host, DEFAULT_MODEL)
+    system, user, schema = tag_request(facets, text, context)
+    # The JSON's braces, quotes and keys are generated tokens too; a name
+    # takes at most one token per character.
+    budget = 8 + sum(len(n) + 8 for n, _ in facets)
+    resp = chat(host, model, system, user, {"num_predict": budget, "num_ctx": num_ctx}, timeout, format=schema)
+    if "unscored" in resp:
+        return resp
+    if not isinstance(resp.get("logprobs"), list) or not resp.get("done"):
+        return {"label": None, "unscored": f"{host}: response has no logprobs (Ollama too old?)", "host": host}
+    found = answers(resp["logprobs"])
+    tags = {}
+    for name, opts in facets:
+        if name not in found:
+            tags[name] = {"label": None, "unscored": "no answer for it in the response"}
+            continue
+        labels = [str(i) for i in range(1, len(opts) + 1)] + ["0"]
+        p, mass = score(found[name], labels)
+        if mass < MASS_MIN:
+            tags[name] = {"label": None, "unscored": f"label mass {mass:.2f} < {MASS_MIN}", "mass": round(mass, 3)}
+            continue
+        p = {o: p[l] for l, o in zip(labels, opts + ["none"])}
+        tags[name] = {"label": max(p, key=p.get), "p": p, "mass": mass}
+    return {"tags": tags, "model": model, "host": host, "ms": resp["ms"]}
 
 
 def embed(texts, model=EMBED_MODEL, host=None, timeout=None, query=False):
@@ -512,6 +597,125 @@ def enum_options(values):
     return [o for o in out if o.strip()]
 
 
+def read_context(ap, path):
+    """-c's file, stripped, or None without -c. A missing or empty file is a usage error."""
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            context = fh.read().decode("utf-8", errors="replace").strip()
+    except OSError as e:
+        ap.error(f"-c {path}: {e.strerror}")
+    if not context:
+        ap.error(f"-c {path}: the file is empty")
+    return context
+
+
+def read_files(ap, groups):
+    """-i's files as one text, and the range each occupies: each starts where
+    the last ended, on its own line. A name with a comma in it is given with
+    its own -i."""
+    parts, files = [], []
+    for path in [p for group in groups for p in (group.split(",") if not os.path.exists(group) else [group]) if p]:
+        try:
+            with open(path, "rb") as fh:
+                part = fh.read().decode("utf-8", errors="replace")
+        except OSError as e:
+            ap.error(f"-i {path}: {e.strerror}")
+        if parts and not parts[-1].endswith("\n"):
+            parts[-1] += "\n"
+        start = sum(len(p) for p in parts)
+        files.append({"file": path, "start": start, "end": start + len(part)})
+        parts.append(part)
+    return "".join(parts), files
+
+
+TAG_EPILOG = """\
+Output: one line per question, NAME ANSWER P; -j for JSON. Exit: 0 when every question is answered, 2 when any is unscored, 3 when any answer is under -t.
+
+    notmuch show --format=raw id:x | classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'"""
+
+
+def tag_main(argv, prog="classif tag"):
+    """classif tag: several questions about one text, read once."""
+    global PROG
+    PROG = prog
+    ap = argparse.ArgumentParser(
+        prog=prog, formatter_class=Help, epilog=TAG_EPILOG,
+        usage="cmd | %(prog)s [options] NAME=OPTIONS ...\n       %(prog)s [options] NAME=OPTIONS ... -i FILE",
+        description="Ask several questions about one text in one call. The text is read once, so each question "
+                    "after the first adds a few generated tokens, not another read. The model writes each "
+                    "question's name before its answer, so the answers stay apart; p is raw, with no fitted "
+                    "temperature.")
+    ap.add_argument("facets", nargs="+", metavar="NAME=OPTIONS",
+                    help="a question and its answers, urgency=today,this week,no deadline: the name is what the "
+                         "model reads, a word or a whole question; 1 to 9 options, by commas or newlines, plus none")
+    ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
+                    help="read the text from FILE; repeat -i, or give a.log,b.log, to join several into one text")
+    ap.add_argument("-c", "--context", metavar="FILE", help="the rules to judge the text by, read first")
+    ap.add_argument("-j", "--json", action="store_true", help="print the full result as JSON")
+    ap.add_argument("-t", "--min-p", type=float, metavar="P",
+                    help="mark an answer under this p unsure and exit 3")
+    ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS", help="bound the call")
+    a = ap.parse_intermixed_args(argv)
+    facets = []
+    for f in a.facets:
+        name, _, rest = f.partition("=")
+        opts = [o.strip() for o in re.split(r"[,\n]", rest) if o.strip()]
+        if not name.strip() or not opts:
+            ap.error(f"{f!r}: want NAME=OPTION,OPTION...")
+        if len(opts) > 9 or len({o.lower() for o in opts + ["none"]}) != len(opts) + 1:
+            ap.error(f"{name.strip()}: want 1 to 9 distinct options other than none, got {', '.join(opts)}")
+        facets.append((name.strip(), opts))
+    if len({n.lower() for n, _ in facets}) != len(facets):
+        ap.error("each question needs its own name")
+    if a.min_p is not None and not 0 < a.min_p <= 1:
+        ap.error(f"--min-p wants a p above 0 and at most 1, got {a.min_p}")
+    if a.deadline is not None and a.deadline <= 0:
+        ap.error(f"-d wants seconds above 0, got {a.deadline}")
+    context = read_context(ap, a.context)
+    if a.files is not None:
+        raw = read_files(ap, a.files)[0]
+    else:
+        raw = "" if sys.stdin.isatty() else sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    text = raw.strip()
+    if not text:
+        ap.error("no input: pipe the text in or pass -i FILE")
+    wait = a.deadline
+    if wait is None and "CLASSIF_TIMEOUT" not in os.environ:
+        wait = 15 + (len(text) + len(context or "")) / READ_RATE
+    r = tag(facets, text, timeout=wait, context=context)
+    if "tags" not in r:
+        why = r.pop("unscored") + (". tag reads the whole text in one call; past the window ask one question at "
+                                   "a time" if r.get("overflow") else "")
+        return unscored(why, a.json, **{k: v for k, v in r.items() if k != "label"})
+    tags, code = r["tags"], 0
+    for t in tags.values():
+        if t["label"] is None:
+            code = 2
+            continue
+        t["confidence"] = round(confidence(t["p"][t["label"]], len(t["p"])), 3)
+        t["p"] = {o: round(v, 3) for o, v in t["p"].items()}
+        t["mass"] = round(t["mass"], 3)
+        if a.min_p is not None:
+            t["unsure"] = t["p"][t["label"]] < a.min_p
+            code = code or (3 if t["unsure"] else 0)
+    if a.json:
+        dump({**r, **({"context": a.context} if context else {})})
+    else:
+        w = max(len(n) for n in tags)
+        lw = max(len(t["label"] or "") for t in tags.values())
+        for n, t in tags.items():
+            if t["label"] is None:
+                print(f"{n:<{w}}  unscored")
+            else:
+                print(f"{n:<{w}}  {t['label']:<{lw}}  {t['p'][t['label']]:.2f}" + (" unsure" if t.get("unsure") else ""))
+    for n, t in tags.items():
+        if t["label"] is None:
+            print(f"{PROG}: {n}: unscored: {t['unscored']}", file=sys.stderr)
+    return code
+
+
 def main(argv=None, prog="classif"):
     global PROG
     PROG = prog
@@ -562,15 +766,7 @@ def main(argv=None, prog="classif"):
         ap.error("got an input argument and -i; pass one of them")
     if a.why and not claim and a.enum is None:
         ap.error("--why answers the default labels and -e; custom -l labels need one whole read")
-    context = None
-    if a.context is not None:
-        try:
-            with open(a.context, "rb") as fh:
-                context = fh.read().decode("utf-8", errors="replace").strip()
-        except OSError as e:
-            ap.error(f"-c {a.context}: {e.strerror}")
-        if not context:
-            ap.error(f"-c {a.context}: the file is empty")
+    context = read_context(ap, a.context)
     if a.min_p is not None and not 0 < a.min_p <= 1:
         ap.error(f"--min-p wants a p above 0 and at most 1, got {a.min_p}")
     if a.extra:
@@ -605,23 +801,7 @@ def main(argv=None, prog="classif"):
     show = dict(zip(labels, names or labels))
     raw, files = a.input, []
     if a.files is not None:
-        # Several files are one text: each starts where the last ended, on
-        # its own line, and -j names the range each one occupies.
-        parts = []
-        # A name with a comma in it is given with its own -i.
-        for path in [p for group in a.files for p in (group.split(",") if not os.path.exists(group) else [group])
-                     if p]:
-            try:
-                with open(path, "rb") as fh:
-                    part = fh.read().decode("utf-8", errors="replace")
-            except OSError as e:
-                ap.error(f"-i {path}: {e.strerror}")
-            if parts and not parts[-1].endswith("\n"):
-                parts[-1] += "\n"
-            start = sum(len(p) for p in parts)
-            files.append({"file": path, "start": start, "end": start + len(part)})
-            parts.append(part)
-        raw = "".join(parts)
+        raw, files = read_files(ap, a.files)
     elif raw is None or raw == "-":
         if not sys.stdin.isatty():
             # head -c cuts mid-character and binaries are not UTF-8 at all;

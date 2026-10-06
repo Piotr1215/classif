@@ -109,6 +109,13 @@ Plain output is `LABEL P`. `-j` returns JSON with scores, model and execution me
 
 `-w`, or `--why`, uses the line reader and prints supporting lines. It is slower and can differ from a single whole-input decision. Memory-mode JSON includes evidence, source offsets and the answer's basis for applications to show before acting.
 
+`classif tag` asks several questions about one text and reads the text once, printing one `NAME ANSWER P` line per question; see [several questions, one text](docs/reference.md#several-questions-one-text).
+
+```sh
+notmuch show --format=raw id:x |
+  ./classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'
+```
+
 See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies and named decision specs. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
 
 ## Architecture
