@@ -88,6 +88,21 @@ class TagTests(unittest.TestCase):
         r = run(fake.host, "tag", "-t", "0.85", URGENCY, KIND, stdin=MAIL)
         self.assertEqual((r.returncode, r.stdout), (3, "urgency  today    0.90\nkind     asks me  0.80 unsure\n"))
 
+    def test_min_p_compares_the_unrounded_p(self):
+        # 0.9996 and 0.7996 print as 1.00 and 0.80 but sit under -t 1 and -t 0.8.
+        for p, floor in ((0.9996, "1"), (0.7996, "0.8")):
+            fake = self.serve(keyed('{"', "kind", '":', ("1", {"1": p, "2": 1 - p}), "}"))
+            r = run(fake.host, "tag", "-t", floor, KIND, stdin=MAIL)
+            self.assertEqual(r.returncode, 3, (p, floor))
+            self.assertTrue(r.stdout.endswith(" unsure\n"), (p, floor))
+
+    def test_the_token_budget_covers_names_written_a_byte_per_token(self):
+        # Twelve U+20000 and kind took Winnow 57 generated tokens; a budget of
+        # characters gave it 40 and cut the first key.
+        fake = self.serve(URGENT_ASK)
+        run(fake.host, "tag", "\U00020000" * 12 + "=a,b", KIND, stdin=MAIL)
+        self.assertGreaterEqual(fake.requests[0]["options"]["num_predict"], 57)
+
     def test_json_keys_each_question_by_its_name(self):
         fake = self.serve(URGENT_ASK)
         d = json.loads(run(fake.host, "tag", "-j", URGENCY, KIND, stdin=MAIL).stdout)

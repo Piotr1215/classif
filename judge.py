@@ -467,9 +467,11 @@ def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx
             return {"label": None, "unscored": "no Ollama host answered: " + ",".join(h for h, _ in hosts())}
     model = model or dict(hosts()).get(host, DEFAULT_MODEL)
     system, user, schema = tag_request(facets, text, context)
-    # The JSON's braces, quotes and keys are generated tokens too; a name
-    # takes at most one token per character.
-    budget = 8 + sum(len(n) + 8 for n, _ in facets)
+    # The JSON's braces, quotes and keys are generated tokens too. A character
+    # the vocabulary lacks is written a byte per token, or as a \u escape, so
+    # a key costs at most its ASCII-escaped length, which is never shorter
+    # than its UTF-8 bytes: twelve U+20000 took Winnow 57 tokens with kind.
+    budget = 8 + sum(len(json.dumps(n)) + 6 for n, _ in facets)
     resp = chat(host, model, system, user, {"num_predict": budget, "num_ctx": num_ctx}, timeout, format=schema)
     if "unscored" in resp:
         return resp
@@ -694,12 +696,13 @@ def tag_main(argv, prog="classif tag"):
         if t["label"] is None:
             code = 2
             continue
+        if a.min_p is not None:
+            # Before rounding: 0.9996 prints as 1.00 and is still under -t 1.
+            t["unsure"] = t["p"][t["label"]] < a.min_p
+            code = code or (3 if t["unsure"] else 0)
         t["confidence"] = round(confidence(t["p"][t["label"]], len(t["p"])), 3)
         t["p"] = {o: round(v, 3) for o, v in t["p"].items()}
         t["mass"] = round(t["mass"], 3)
-        if a.min_p is not None:
-            t["unsure"] = t["p"][t["label"]] < a.min_p
-            code = code or (3 if t["unsure"] else 0)
     if a.json:
         dump({**r, **({"context": a.context} if context else {})})
     else:
