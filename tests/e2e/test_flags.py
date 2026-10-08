@@ -112,9 +112,8 @@ class Flags(E2E):
         self.assertEqual((r.rc, r.out), (3, ""))
 
     def test_a_question_named_like_a_subcommand_runs_after_a_double_dash(self):
-        rc, label = self.label("--", "pause", "We should pause the release until QA signs off.")
+        rc, label = self.label("--", "unload", "We should unload the truck before noon.")
         self.assertIn((rc, label), {(0, "yes"), (1, "no"), (1, "unknown")})
-        self.assertFalse((self.tmp / "state" / "paused").exists())
 
 
 @judgement

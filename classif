@@ -9,7 +9,7 @@
 The first argument decides. One of the commands below runs a named spec;
 anything else is a question for the judge (judge.py), whose flags and
 exit codes apply unchanged (`classif -h` lists them). A question that is
-itself a command word goes after `--`: classif -- pause.
+itself a command word goes after `--`: classif -- unload.
 
     classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi' < mail.txt
     classif specs                                # each spec, the fields it wants, its file
@@ -30,8 +30,7 @@ spec's model come first, since on a small GPU a second model evicts the
 first. Fields are cut to the spec's caps: a longer field costs time, and a
 long query pushes p(yes) up on its own.
 
-Env: CLASSIF=0 disables everything, as does `classif pause` until
-`classif resume`. CLASSIF_HOSTS, CLASSIF_TIMEOUT and
+Env: CLASSIF=0 disables everything. CLASSIF_HOSTS, CLASSIF_TIMEOUT and
 CLASSIF_CALIBRATION as for judge.py. CLASSIF_DIR (the only spec dir when set),
 CLASSIF_LOG (default ~/.local/state/classif/log.jsonl).
 """
@@ -71,17 +70,10 @@ def log_path():
     return os.environ.get("CLASSIF_LOG") or os.path.expanduser("~/.local/state/classif/log.jsonl")
 
 
-def pause_path():
-    return os.path.join(os.path.dirname(log_path()), "paused")
-
-
 def off():
-    """Why classif must not call a model now, or "" when it may: CLASSIF=0, or
-    the pause file `classif pause` writes to give the GPU to something else."""
+    """Why classif must not call a model now, or "" when it may: CLASSIF=0."""
     if os.environ.get("CLASSIF", "1") == "0":
         return "CLASSIF=0"
-    if os.path.exists(pause_path()):
-        return "paused (classif resume)"
     return ""
 
 
@@ -235,17 +227,12 @@ def make_row(name, spec, host, meta, key, aux, res, decision):
 # --- notmuch -------------------------------------------------------------
 
 
-def pause():
+def unload():
     """Give the GPU to something else (the EVE launch wrapper calls this):
-    write the pause file every consumer checks, then unload each loaded model
-    classif names (the hosts' models, the specs' models, the embedder) from
-    the judge's hosts and the specs' own. Ad hoc questions pin the hosts'
-    model under keep_alive -1, so specs alone miss it. resume() removes the
-    file, and the next call loads the model again. Hooks run in other
-    processes, so an environment variable set by the caller could not reach
-    them."""
-    os.makedirs(os.path.dirname(pause_path()), exist_ok=True)
-    open(pause_path(), "w").close()
+    unload each loaded model classif names (the hosts' models, the specs'
+    models, the embedder) from the judge's hosts and the specs' own. Ad hoc
+    questions pin the hosts' model under keep_alive -1, so specs alone miss
+    it. Nothing stays off: the next call loads the model again."""
     specs = []
     for name in spec_names():
         try:
@@ -273,14 +260,6 @@ def pause():
                 print(f"classif: unloaded {m} on {host}")
         except (OSError, ValueError) as e:
             print(f"classif: {host}: {e}", file=sys.stderr)
-    return 0
-
-
-def resume():
-    try:
-        os.remove(pause_path())
-    except FileNotFoundError:
-        pass
     return 0
 
 
@@ -420,7 +399,7 @@ def classify(name, pairs, hook="classify"):
     return 0 if r["label"] == spec["labels"][0] else 1
 
 
-COMMANDS = ("specs", "classify", "smoke", "pause", "resume", "histogram", "tag")
+COMMANDS = ("specs", "classify", "smoke", "unload", "histogram", "tag")
 
 
 def main():
@@ -449,8 +428,7 @@ def main():
         for name, what in (("tag", "ask several questions about one text, read once"),
                            ("specs", "list the saved questions (specs) and the fields each wants"),
                            ("histogram", "how sure a spec's answers have been, from the log"),
-                           ("pause", "stop every consumer and unload the models"),
-                           ("resume", "undo pause")):
+                           ("unload", "free the GPU; the next call loads the models again")):
             print(f"  {name:13} {what}")
         print("For hooks and spec authoring: classify, smoke")
         print("\nFull documentation <https://github.com/Piotr1215/classif>")
@@ -464,8 +442,7 @@ def main():
     c.add_argument("fields", nargs="+")
     sm = sub.add_parser("smoke", help="check a spec's smoke rows on a live model")
     sm.add_argument("spec")
-    sub.add_parser("pause", help="stop every consumer and unload the models classif loads, e.g. while a game needs the GPU")
-    sub.add_parser("resume", help="undo pause")
+    sub.add_parser("unload", help="unload the models classif loads, e.g. before a game needs the GPU; the next call loads them again")
     h = sub.add_parser("histogram", help="p histogram from the log, with the valley; no spec lists what the log holds")
     h.add_argument("spec", nargs="?", help="spec to draw; omit to list the spec and hook pairs with rows")
     h.add_argument("--hook", help="only rows this hook logged")
@@ -482,10 +459,8 @@ def main():
         return classify(a.spec, a.fields, a.hook)
     if a.cmd == "smoke":
         return smoke(a.spec)
-    if a.cmd == "pause":
-        return pause()
-    if a.cmd == "resume":
-        return resume()
+    if a.cmd == "unload":
+        return unload()
     print(histogram(a.spec, a.hook, a.days) if a.spec else histograms(a.days))
     return 0
 

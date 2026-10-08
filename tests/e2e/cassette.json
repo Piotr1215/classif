@@ -10813,250 +10813,6 @@
    },
    "status": 200
   },
-  "c43bfe7d45b57fa7": {
-   "request": {
-    "body": {
-     "logprobs": true,
-     "messages": [
-      {
-       "content": "Answer with exactly one word: yes, no or unknown.",
-       "role": "system"
-      },
-      {
-       "content": "Text:\nWe should pause the release until QA signs off.\n\npause Answer yes, no or unknown.",
-       "role": "user"
-      }
-     ],
-     "model": "winnow:12b-q4_K_M",
-     "options": {
-      "num_ctx": 32768,
-      "num_predict": 1,
-      "temperature": 0
-     },
-     "stream": false,
-     "think": false,
-     "top_logprobs": 20,
-     "truncate": false
-    },
-    "method": "POST",
-    "path": "/api/chat"
-   },
-   "response": {
-    "done": true,
-    "done_reason": "length",
-    "eval_count": 1,
-    "logprobs": [
-     {
-      "bytes": [
-       121,
-       101,
-       115
-      ],
-      "logprob": -4.041276406496763e-05,
-      "token": "yes",
-      "top_logprobs": [
-       {
-        "bytes": [
-         121,
-         101,
-         115
-        ],
-        "logprob": -4.041276406496763e-05,
-        "token": "yes"
-       },
-       {
-        "bytes": [
-         110,
-         111
-        ],
-        "logprob": -10.595535278320312,
-        "token": "no"
-       },
-       {
-        "bytes": [
-         89,
-         101,
-         115
-        ],
-        "logprob": -11.462547302246094,
-        "token": "Yes"
-       },
-       {
-        "bytes": [
-         117,
-         110,
-         107,
-         110,
-         111,
-         119,
-         110
-        ],
-        "logprob": -12.52667236328125,
-        "token": "unknown"
-       },
-       {
-        "bytes": [
-         78,
-         111
-        ],
-        "logprob": -14.58952522277832,
-        "token": "No"
-       },
-       {
-        "bytes": [
-         112,
-         97,
-         117,
-         115,
-         101
-        ],
-        "logprob": -14.633560180664062,
-        "token": "pause"
-       },
-       {
-        "bytes": [
-         32,
-         121,
-         101,
-         115
-        ],
-        "logprob": -16.06043243408203,
-        "token": " yes"
-       },
-       {
-        "bytes": [
-         60,
-         124,
-         99,
-         104,
-         97,
-         110,
-         110,
-         101,
-         108,
-         62
-        ],
-        "logprob": -16.109603881835938,
-        "token": "<|channel>"
-       },
-       {
-        "bytes": [
-         110,
-         111,
-         116
-        ],
-        "logprob": -16.35303497314453,
-        "token": "not"
-       },
-       {
-        "bytes": [
-         49
-        ],
-        "logprob": -16.646108627319336,
-        "token": "1"
-       },
-       {
-        "bytes": [
-         84
-        ],
-        "logprob": -16.824071884155273,
-        "token": "T"
-       },
-       {
-        "bytes": [
-         121,
-         101,
-         97,
-         104
-        ],
-        "logprob": -16.867570877075195,
-        "token": "yeah"
-       },
-       {
-        "bytes": [
-         89,
-         69,
-         83
-        ],
-        "logprob": -17.246803283691406,
-        "token": "YES"
-       },
-       {
-        "bytes": [
-         78
-        ],
-        "logprob": -17.42892074584961,
-        "token": "N"
-       },
-       {
-        "bytes": [
-         80,
-         97,
-         117,
-         115,
-         101
-        ],
-        "logprob": -17.602874755859375,
-        "token": "Pause"
-       },
-       {
-        "bytes": [
-         121,
-         111,
-         117,
-         110,
-         103
-        ],
-        "logprob": -17.63225746154785,
-        "token": "young"
-       },
-       {
-        "bytes": [
-         95
-        ],
-        "logprob": -17.641687393188477,
-        "token": "_"
-       },
-       {
-        "bytes": [
-         121,
-         111,
-         117
-        ],
-        "logprob": -17.705720901489258,
-        "token": "you"
-       },
-       {
-        "bytes": [
-         121
-        ],
-        "logprob": -17.82177734375,
-        "token": "y"
-       },
-       {
-        "bytes": [
-         109,
-         97,
-         121,
-         98,
-         101
-        ],
-        "logprob": -17.823389053344727,
-        "token": "maybe"
-       }
-      ]
-     }
-    ],
-    "message": {
-     "content": "yes",
-     "role": "assistant"
-    },
-    "model": "winnow:12b-q4_K_M",
-    "prompt_eval_cached_count": 0,
-    "prompt_eval_count": 52
-   },
-   "status": 200
-  },
   "c6638ced6c9ee00b": {
    "request": {
     "body": {
@@ -13769,6 +13525,257 @@
     "model": "winnow:12b-q4_K_M",
     "prompt_eval_cached_count": 0,
     "prompt_eval_count": 84
+   },
+   "status": 200
+  },
+  "f10c0514bb8d1208": {
+   "request": {
+    "body": {
+     "logprobs": true,
+     "messages": [
+      {
+       "content": "Answer with exactly one word: yes, no or unknown.",
+       "role": "system"
+      },
+      {
+       "content": "Text:\nWe should unload the truck before noon.\n\nunload Answer yes, no or unknown.",
+       "role": "user"
+      }
+     ],
+     "model": "winnow:12b-q4_K_M",
+     "options": {
+      "num_ctx": 32768,
+      "num_predict": 1,
+      "temperature": 0
+     },
+     "stream": false,
+     "think": false,
+     "top_logprobs": 20,
+     "truncate": false
+    },
+    "method": "POST",
+    "path": "/api/chat"
+   },
+   "response": {
+    "done": true,
+    "done_reason": "length",
+    "eval_count": 1,
+    "logprobs": [
+     {
+      "bytes": [
+       121,
+       101,
+       115
+      ],
+      "logprob": -0.00011242067557759583,
+      "token": "yes",
+      "top_logprobs": [
+       {
+        "bytes": [
+         121,
+         101,
+         115
+        ],
+        "logprob": -0.00011242067557759583,
+        "token": "yes"
+       },
+       {
+        "bytes": [
+         117,
+         110,
+         107,
+         110,
+         111,
+         119,
+         110
+        ],
+        "logprob": -9.868913650512695,
+        "token": "unknown"
+       },
+       {
+        "bytes": [
+         89,
+         101,
+         115
+        ],
+        "logprob": -10.126138687133789,
+        "token": "Yes"
+       },
+       {
+        "bytes": [
+         110,
+         111
+        ],
+        "logprob": -10.885520935058594,
+        "token": "no"
+       },
+       {
+        "bytes": [
+         78,
+         111
+        ],
+        "logprob": -14.342187881469727,
+        "token": "No"
+       },
+       {
+        "bytes": [
+         60,
+         124,
+         99,
+         104,
+         97,
+         110,
+         110,
+         101,
+         108,
+         62
+        ],
+        "logprob": -14.971233367919922,
+        "token": "<|channel>"
+       },
+       {
+        "bytes": [
+         117,
+         110
+        ],
+        "logprob": -15.153542518615723,
+        "token": "un"
+       },
+       {
+        "bytes": [
+         32,
+         121,
+         101,
+         115
+        ],
+        "logprob": -15.519105911254883,
+        "token": " yes"
+       },
+       {
+        "bytes": [
+         84
+        ],
+        "logprob": -15.652189254760742,
+        "token": "T"
+       },
+       {
+        "bytes": [
+         110,
+         111,
+         116
+        ],
+        "logprob": -16.11812973022461,
+        "token": "not"
+       },
+       {
+        "bytes": [
+         95
+        ],
+        "logprob": -16.255430221557617,
+        "token": "_"
+       },
+       {
+        "bytes": [
+         117,
+         110,
+         99,
+         101,
+         114,
+         116,
+         97,
+         105,
+         110
+        ],
+        "logprob": -16.613698959350586,
+        "token": "uncertain"
+       },
+       {
+        "bytes": [
+         89,
+         69,
+         83
+        ],
+        "logprob": -16.724143981933594,
+        "token": "YES"
+       },
+       {
+        "bytes": [
+         49
+        ],
+        "logprob": -16.751806259155273,
+        "token": "1"
+       },
+       {
+        "bytes": [
+         85,
+         110,
+         107,
+         110,
+         111,
+         119,
+         110
+        ],
+        "logprob": -16.96369743347168,
+        "token": "Unknown"
+       },
+       {
+        "bytes": [
+         121,
+         111,
+         117,
+         110,
+         103
+        ],
+        "logprob": -17.549884796142578,
+        "token": "young"
+       },
+       {
+        "bytes": [
+         78
+        ],
+        "logprob": -17.589847564697266,
+        "token": "N"
+       },
+       {
+        "bytes": [
+         121,
+         101,
+         97,
+         104
+        ],
+        "logprob": -17.731178283691406,
+        "token": "yeah"
+       },
+       {
+        "bytes": [
+         117,
+         110,
+         115
+        ],
+        "logprob": -17.89262580871582,
+        "token": "uns"
+       },
+       {
+        "bytes": [
+         107,
+         110,
+         111,
+         119,
+         110
+        ],
+        "logprob": -17.909896850585938,
+        "token": "known"
+       }
+      ]
+     }
+    ],
+    "message": {
+     "content": "yes",
+     "role": "assistant"
+    },
+    "model": "winnow:12b-q4_K_M",
+    "prompt_eval_cached_count": 0,
+    "prompt_eval_count": 50
    },
    "status": 200
   },

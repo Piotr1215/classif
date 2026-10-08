@@ -1,5 +1,5 @@
 """Specs and the subcommands that read them, against a live model: specs,
-classify, smoke, histogram, pause and resume. Each spec is
+classify, smoke, histogram and unload. Each spec is
 written into the test's own spec dir and names the routed model, so any model
 that answers plain questions passes."""
 import json
@@ -116,15 +116,12 @@ class Specs(SpecBase):
         self.assertEqual(self.cli("histogram", "greeting", "--hook", "e2e").out.splitlines()[0],
                          "greeting p(yes) n=2 hook=e2e")
 
-    def test_pause_stops_classify_until_resume(self):
+    def test_classify_after_unload_answers_without_a_resume(self):
         self.spec("greeting")
-        # A dead host, so pause unloads nothing on the live server.
-        self.cli("pause", env={"CLASSIF_HOSTS": "localhost:1"})
-        paused, _ = self.classify("greeting", "message=Hello there!")
-        self.assertEqual((paused.rc, paused.err.strip()), (2, "classif: paused (classif resume)"))
-        self.cli("resume")
-        resumed, d = self.classify("greeting", "message=Hello there!")
-        self.assertEqual((resumed.rc, d["label"]), (0, "yes"))
+        # A dead host, so unload frees nothing on the live server.
+        self.cli("unload", env={"CLASSIF_HOSTS": "localhost:1"})
+        r, d = self.classify("greeting", "message=Hello there!")
+        self.assertEqual((r.rc, d["label"]), (0, "yes"))
 
 
 @judgement

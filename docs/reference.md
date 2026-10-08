@@ -8,7 +8,7 @@ See the [README](../README.md) for the quick start and [architecture](architectu
 
 Short inputs use one whole-input call. A server-confirmed context overflow switches default yes/no/unknown questions and enums to the external-memory executor. Connection failures, other HTTP errors and inadequate label mass stay unscored.
 
-`classif specs` lists the saved classifier definitions, the fields each wants and the file it is read from. `classif classify SPEC field=value ...` and `classif smoke SPEC` use them. Other integration subcommands remain available through `classif --help`. If a question equals a subcommand word, put it after `--`, for example `classif -- pause "source text"`.
+`classif specs` lists the saved classifier definitions, the fields each wants and the file it is read from. `classif classify SPEC field=value ...` and `classif smoke SPEC` use them. Other integration subcommands remain available through `classif --help`. If a question equals a subcommand word, put it after `--`, for example `classif -- unload "source text"`.
 
 | Flag | Meaning |
 | --- | --- |
@@ -172,7 +172,7 @@ Connection probes run in parallel. The first host to accept a connection wins, w
 | `CLASSIF_HOSTS` | Comma list of `host:port[=model]`; overrides the hosts file. |
 | `CLASSIF_DIR` | The only spec directory, when set. |
 | `CLASSIF_TIMEOUT` | Seconds for one model call. Unset, a whole read gets 15 s plus 1 s per 2000 chars; `-d` overrides both. |
-| `CLASSIF_KEEP_ALIVE` | How long Ollama keeps the model loaded after a call: a duration (`2h`) or seconds, `-1` until `classif pause` or Ollama unloads it. Unset, the first line of `~/.config/classif/keep_alive`, else `30m`. The file reaches callers started before it changed, such as hooks. |
+| `CLASSIF_KEEP_ALIVE` | How long Ollama keeps the model loaded after a call: a duration (`2h`) or seconds, `-1` until `classif unload` or Ollama drops it. Unset, the first line of `~/.config/classif/keep_alive`, else `30m`. The file reaches callers started before it changed, such as hooks. |
 | `CLASSIF_CALIBRATION` | Another calibration file. |
 
 ## Tests and evals

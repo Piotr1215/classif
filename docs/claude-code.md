@@ -17,7 +17,7 @@ Only the verdict enters Claude's context. Exit codes branch as in the [README](.
 ## Off switches
 
 - `CLASSIF=0` turns classif off in one process.
-- `classif pause` turns it off everywhere and unloads the models until `classif resume`, to give the GPU to something else.
+- `classif unload` frees the GPU for something else; the next call loads the models again.
 
 ## Removed RAG gate
 

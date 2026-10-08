@@ -111,7 +111,7 @@ class SpecDirTests(Base):
         r = subprocess.run([str(ROOT / "classif"), "-h"], capture_output=True, text=True,
                            env=dict(os.environ), timeout=10)
         listed = [l.split()[0] for l in r.stdout.split("Commands:")[1].splitlines() if l.startswith("  ")]
-        self.assertEqual(listed, ["tag", "specs", "histogram", "pause", "resume"])
+        self.assertEqual(listed, ["tag", "specs", "histogram", "unload"])
         self.assertIn("For hooks and spec authoring: classify, smoke", r.stdout)
         self.assertTrue(r.stdout.rstrip().endswith("Full documentation <https://github.com/Piotr1215/classif>"))
 
@@ -319,27 +319,23 @@ class LogTests(Base):
         self.assertEqual(len(self.log.read_text().splitlines()), 400)
 
 
-class PauseTests(Base):
-    def test_pause_unloads_the_spec_model_and_classify_stays_off_until_resume(self):
+class UnloadTests(Base):
+    def test_unload_frees_the_spec_model_and_the_next_classify_loads_it_again(self):
         fake = ResidentOllama(lambda user: SURE_NO,
                               loaded=[{"model": "llama3.2:3b", "context_length": 2048},
                                       {"model": "qwen2.5:7b", "context_length": 4096}])
         self.addCleanup(fake.close)
         os.environ["CLASSIF_HOSTS"] = fake.host
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(self.sf.pause(), 0)
+            self.assertEqual(self.sf.unload(), 0)
         self.assertEqual(fake.unloads, [{"model": "llama3.2:3b", "keep_alive": 0}])
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(self.sf.classify("rag-relevance", ["query=q", "chunk=c"]), 2)
-        self.assertEqual(fake.requests, [])
-        self.assertEqual(self.sf.resume(), 0)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(self.sf.classify("rag-relevance", ["query=q", "chunk=c"]), 1)
         self.assertEqual(len(fake.requests), 1)
 
-    def test_pause_without_specs_unloads_the_hosts_file_models_and_the_embedder(self):
-        # Ad hoc questions pin the hosts file's model with keep_alive -1, so a
-        # pause that only read specs left it holding the GPU.
+    def test_unload_without_specs_frees_the_hosts_file_models_and_the_embedder(self):
+        # Ad hoc questions pin the hosts file's model with keep_alive -1, so an
+        # unload that only read specs left it holding the GPU.
         fake = ResidentOllama(lambda user: SURE_NO,
                               loaded=[{"model": "winnow:12b-q4_K_M"}, {"model": "embeddinggemma:latest"},
                                       {"model": "qwen2.5:7b"}])
@@ -350,7 +346,7 @@ class PauseTests(Base):
         os.environ.pop("CLASSIF_HOSTS", None)
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "config")
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(self.sf.pause(), 0)
+            self.assertEqual(self.sf.unload(), 0)
         self.assertEqual(fake.unloads, [{"model": "embeddinggemma:latest", "keep_alive": 0},
                                         {"model": "winnow:12b-q4_K_M", "keep_alive": 0}])
 
@@ -384,12 +380,6 @@ class ClassifyTests(Base):
         self.serve(chat([("No", -0.05)]))
         code, out = self.run_classify("query=q", "chunk=c")
         self.assertEqual((code, json.loads(out)["decision"]), (1, "shadow"))
-
-    def test_a_pause_exits_2_without_asking(self):
-        fake = self.serve(chat([("No", -0.05), ("Yes", -3.0)]))
-        with redirect_stdout(io.StringIO()):
-            self.sf.pause()
-        self.assertEqual((self.run_classify("query=q", "chunk=c")[0], fake.requests, self.rows()), (2, [], []))
 
     def test_no_host_exits_2_and_logs_nothing(self):
         os.environ["CLASSIF_HOSTS"] = DEAD

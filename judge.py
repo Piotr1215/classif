@@ -326,7 +326,7 @@ def keep_alive():
     """How long Ollama keeps the model loaded after a call: CLASSIF_KEEP_ALIVE,
     else the first line of the keep_alive file in the config dir, as a
     duration ("2h") or seconds, where -1 keeps it until something unloads it
-    (classif pause does). The file reaches callers whose environment was set
+    (classif unload does). The file reaches callers whose environment was set
     before it changed, such as hooks of a running session. Ollama reads "-1"
     as a bad duration, so a bare number goes out as a number. Unset, 30m."""
     v = os.environ.get("CLASSIF_KEEP_ALIVE", "").strip()

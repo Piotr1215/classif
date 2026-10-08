@@ -183,7 +183,7 @@ judgement = unittest.skipUnless(MODEL == judge.DEFAULT_MODEL, f"judgement checks
 
 class E2E(unittest.TestCase):
     """A spec dir and log of its own per test, so nothing reads or writes the
-    live log, samples, pause file or the specs a consumer loads."""
+    live log, samples or the specs a consumer loads."""
 
     def setUp(self):
         if not PROXY:

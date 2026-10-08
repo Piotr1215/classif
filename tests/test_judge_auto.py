@@ -344,9 +344,9 @@ class AutoInputTests(unittest.TestCase):
 
     def test_command_word_can_be_an_escaped_question(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
-        result = self.call(fake, "--", "pause", "source")
+        result = self.call(fake, "--", "unload", "source")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("pause", fake.requests[0]["messages"][1]["content"])
+        self.assertIn("unload", fake.requests[0]["messages"][1]["content"])
 
     def test_invalid_memory_flags_are_rejected_before_reading_or_scoring(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
