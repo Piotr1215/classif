@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import subprocess
+
 from test_judge import FakeOllama, run
 
 MAIL = "Prod login is down since the 3pm deploy. Can you roll back now?"
@@ -157,6 +159,12 @@ class TagTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertTrue(fake.requests[0]["messages"][-1]["content"].startswith(
             f"Context:\nRollbacks need a ticket.\n\nText:\n{MAIL}\n\n"))
+
+    def test_with_no_input_c_is_the_text_tagged(self):
+        fake = self.serve(URGENT_ASK)
+        r = run(fake.host, "tag", URGENCY, KIND, "-c", MAIL, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(fake.requests[0]["messages"][-1]["content"].startswith(f"Text:\n{MAIL.strip()}\n\n"))
 
     def test_an_input_past_the_window_is_unscored(self):
         fake = self.serve((400, {"error": "request (40000 tokens) exceeds the available context size (32768 tokens)"}))

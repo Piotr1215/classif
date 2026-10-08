@@ -83,8 +83,10 @@ def env(hosts, calibration="/nonexistent"):
 def run(hosts, *args, stdin="", calibration="/nonexistent"):
     # stdin="" by default: a CLI given no input reads stdin, and an inherited
     # one can stay open and hang the call until its timeout.
-    return subprocess.run([str(SCRIPT), *args], input=stdin, capture_output=True,
-                          text=True, env=env(hosts, calibration), timeout=10)
+    # stdin=subprocess.DEVNULL gives the CLI no input at all, as at a terminal.
+    feed = {"stdin": stdin} if stdin is subprocess.DEVNULL else {"input": stdin}
+    return subprocess.run([str(SCRIPT), *args], capture_output=True, text=True, env=env(hosts, calibration),
+                          timeout=10, **feed)
 
 
 class ScoreTests(unittest.TestCase):

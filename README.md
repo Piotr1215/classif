@@ -69,7 +69,7 @@ Save a default as a `host:port[=model]` entry in `~/.config/classif/hosts`. `lla
 | Question | States what to decide | First argument |
 | Input | Supplies the material to judge | Second argument, stdin or `-i FILE` |
 | Output shape | Names the answers your code accepts | `yes`, `no`, `unknown`; or `-e` options |
-| Context | Supplies rules or references for the decision | `-c FILE` |
+| Context | Supplies rules or references for the decision | `-c FILE` or `-c TEXT` |
 
 Supply a policy and the discussion it governs:
 

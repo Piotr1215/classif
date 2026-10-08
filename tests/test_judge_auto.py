@@ -75,10 +75,12 @@ class AutoInputTests(unittest.TestCase):
         return fake
 
     def call(self, fake, *args, text=None):
+        """text=None gives the CLI no input at all, as at a terminal; "" is an empty pipe."""
         variables = env(fake.host)
         variables["XDG_CACHE_HOME"] = self.tmp.name
-        return subprocess.run([str(PUBLIC), *args], input=text, text=True, capture_output=True,
-                              env=variables, timeout=10)
+        feed = {"stdin": subprocess.DEVNULL} if text is None else {"input": text}
+        return subprocess.run([str(PUBLIC), *args], text=True, capture_output=True, env=variables, timeout=10,
+                              **feed)
 
     def test_short_input_stays_one_direct_call(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
@@ -350,26 +352,56 @@ class AutoInputTests(unittest.TestCase):
         self.assertTrue(verdict.startswith("reversed "), verdict)
         self.assertEqual(lines, ["  3: That payment was reversed."])
 
-    def test_why_without_input_says_c_is_not_the_input(self):
+    def test_why_with_only_c_points_at_lines_of_c(self):
+        # With no INPUT, -c is the text judged, so its lines are the ones cited.
+        fake = self.serve(self.witness)
+        result = self.call(fake, "--why", "-c", self.SHORT, "An entry reports a deployment failure.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[1:], ["  2: Deployment failure: access denied."])
+
+    def test_without_input_c_is_the_text_judged_not_context(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
-        rules = Path(self.tmp.name) / "rules.txt"
-        rules.write_text("Good help names every flag.\n")
-        result = self.call(fake, "--why", "-c", str(rules), "Is this good help?", text="")
+        result = self.call(fake, "-j", "-c", "Usage: classif QUESTION\n  -w  print the lines", "Is this good help?")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        user = fake.requests[0]["messages"][1]["content"]
+        self.assertIn("Text:\nUsage: classif QUESTION", user)
+        self.assertNotIn("Context:", user)
+        self.assertNotIn("context", json.loads(result.stdout))
+
+    def test_an_empty_pipe_or_argument_stays_an_empty_input_beside_c(self):
+        # git diff with no changes must not get the policy judged in its place,
+        # or passed down a -p gate.
+        fake = self.serve(lambda *_: chat([("yes", -0.01)]))
+        for args, text in ((("-p", "Does this touch secrets?"), ""), (("-p", "Does this touch secrets?", ""), None)):
+            result = self.call(fake, *args, "-c", "Secrets policy: tokens never leave the vault.", text=text)
+            self.assertEqual(result.stdout, "", args)
+            user = fake.requests[-1]["messages"][1]["content"]
+            self.assertIn("Context:\nSecrets policy", user)
+            self.assertNotIn("Text:\nSecrets policy", user)
+
+    def test_c_takes_the_text_itself_as_context(self):
+        fake = self.serve(lambda *_: chat([("yes", -0.01)]))
+        result = self.call(fake, "-c", "Change policy: no deploys on Fridays.", "Does this break the policy?",
+                           "Deployed payments-api on Friday.", text="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        user = fake.requests[0]["messages"][1]["content"]
+        self.assertIn("Context:\nChange policy: no deploys on Fridays.\n\nText:\nDeployed payments-api", user)
+
+    def test_an_unquoted_command_split_into_words_says_to_quote_it(self):
+        fake = self.serve(lambda *_: chat([("yes", -0.01)]))
+        result = self.call(fake, "who am I", "-c", "user", "is:", "decoder", text="")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("--why points at lines of the INPUT, and there is none", result.stderr)
-        self.assertIn("-c is the rules INPUT is judged by, not INPUT", result.stderr)
+        self.assertIn('got 3 arguments, want at most 2 (question, text). The shell split a text into words: quote '
+                      'it, $(cmd) as "$(cmd)" too', result.stderr)
         self.assertEqual(fake.requests, [])
 
-    def test_a_missing_c_file_says_where_the_text_goes(self):
+    def test_a_c_value_that_reads_as_a_missing_file_is_refused(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
-        result = self.call(fake, "-c", " H", "Is this good help?", text="Usage: classif QUESTION")
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("-c  H: No such file or directory. -c names a file of rules the INPUT is judged by",
-                      result.stderr)
-        # A whole text passed to -c is named by its first words, not echoed back.
-        result = self.call(fake, "-c", "usage: classif QUESTION\n" + "a flag\n" * 500, "Is this good help?", text="x")
-        self.assertIn("-c usage: classif QUESTION...: ", result.stderr)
-        self.assertNotIn("a flag", result.stderr)
+        for value in ("rulez.md", "./rules", "policies/deploy"):
+            result = self.call(fake, "-c", value, "Is this fine?", text="fine")
+            self.assertEqual(result.returncode, 2, value)
+            self.assertIn(f"-c {value}: No such file or directory. -c takes a file, <(cmd) or the text itself",
+                          result.stderr)
         self.assertEqual(fake.requests, [])
 
     def test_why_says_so_when_no_line_settles_the_answer(self):

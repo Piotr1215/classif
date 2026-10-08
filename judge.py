@@ -68,10 +68,11 @@ It has no label and passes no gate. A claim that names something the text
 names is answered first from the lines linked to it; when they do not settle
 it, every line is read.
 
--c FILE supplies the rules the text is judged by, a policy or a reference,
-read before the text on every reader and judge call. It is a file, or <(cmd)
-for a command's output; the text itself is the event or record the question
-is asked of, and goes after the question, on stdin or in -i FILE. The context must fit the window with the text,
+-c supplies the background the question needs, a policy, a reference or the
+date, read before the text on every reader and judge call: a file, <(cmd), or
+the text itself. Given no INPUT at all, no argument, -i or pipe, -c is the
+text the question is asked of, so -c "$(cmd)" alone works like piping cmd in;
+an empty pipe stays an empty INPUT. The context must fit the window with the text,
 or with one passage on a long text; past that the server refuses and the
 result is unscored. -i FILE reads the input from a file and names it in the
 -j report; -i A,B or -i A -i B reads several as one input, each on its own
@@ -93,6 +94,7 @@ import math
 import os
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -604,21 +606,37 @@ def enum_options(values):
     return [o for o in out if o.strip()]
 
 
-def read_context(ap, path):
-    """-c's file, stripped, or None without -c. A missing or empty file is a usage error."""
-    if path is None:
-        return None
+def piped():
+    """Whether stdin is a pipe, file or socket, empty or not. A script's
+    empty pipe (git diff with no changes) is an empty input, never a reason
+    to judge -c in its place; a terminal or /dev/null gives nothing."""
     try:
-        with open(path, "rb") as fh:
-            context = fh.read().decode("utf-8", errors="replace").strip()
-    except OSError as e:
-        # A text given where the file name goes would be echoed whole; its first words name it.
-        shown = path if len(path) <= 60 and "\n" not in path else path.split("\n")[0][:40] + "..."
-        ap.error(f"-c {shown}: {e.strerror}. -c names a file of rules the INPUT is judged by, such as -c rules.md "
-                 "or -c <(date); the text to judge goes after the question, on stdin or in -i FILE")
-    if not context:
-        ap.error(f"-c {path}: the file is empty")
-    return context
+        mode = os.fstat(sys.stdin.fileno()).st_mode
+    except (OSError, ValueError, AttributeError):
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or stat.S_ISSOCK(mode)
+
+
+def read_context(ap, value):
+    """-c's text, stripped, or None without -c: the file it names, <(cmd)
+    included, else the value itself. A value that reads as a file name (one
+    word holding a slash or ending in an extension) but names no file is a
+    usage error, so a mistyped path never becomes the context. Empty is too."""
+    if value is None:
+        return None
+    if os.path.exists(value) or (not re.search(r"\s", value) and re.search(r"/|\.\w{1,5}$", value)):
+        try:
+            with open(value, "rb") as fh:
+                context = fh.read().decode("utf-8", errors="replace").strip()
+        except OSError as e:
+            ap.error(f"-c {value}: {e.strerror}. -c takes a file, <(cmd) or the text itself, and this reads as a "
+                     "file name")
+        if not context:
+            ap.error(f"-c {value}: the file is empty")
+        return context
+    if not value.strip():
+        ap.error("-c is empty")
+    return value.strip()
 
 
 def read_files(ap, groups):
@@ -662,7 +680,8 @@ def tag_main(argv, prog="classif tag"):
                          "model reads, a word or a whole question; 1 to 9 options, by commas or newlines, plus none")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read the text from FILE; repeat -i, or give a.log,b.log, to join several into one text")
-    ap.add_argument("-c", "--context", metavar="FILE", help="the rules to judge the text by, read first")
+    ap.add_argument("-c", "--context", metavar="TEXT",
+                    help="background read first: a file, <(cmd) or the text itself; with no input, the text")
     ap.add_argument("-j", "--json", action="store_true", help="print the full result as JSON")
     ap.add_argument("-t", "--min-p", type=float, metavar="P",
                     help="mark an answer under this p unsure and exit 3")
@@ -688,6 +707,9 @@ def tag_main(argv, prog="classif tag"):
         raw = read_files(ap, a.files)[0]
     else:
         raw = "" if sys.stdin.isatty() else sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    if not raw.strip() and context and a.files is None and not piped():
+        # Given no input at all, -c is what the questions are asked of.
+        raw, context, a.context = context, None, None
     text = raw.strip()
     if not text:
         ap.error("no input: pipe the text in or pass -i FILE")
@@ -753,8 +775,9 @@ def main(argv=None, prog="classif"):
                          "exits 3, so && and -p do not fire")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read INPUT from FILE; repeat -i, or give a.log,b.log, to join several into one INPUT")
-    ap.add_argument("-c", "--context", metavar="FILE",
-                    help="the rules to judge INPUT by, read first: a policy, a reference, or -c <(date)")
+    ap.add_argument("-c", "--context", metavar="TEXT",
+                    help="background the question needs, read first: a policy, a reference, the date. A file, "
+                         "<(cmd) or the text itself; with no INPUT it is the text judged")
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
                     help="bound all the work; a read cut short exits 3")
     ap.add_argument("-w", "--why", action="store_true",
@@ -781,8 +804,8 @@ def main(argv=None, prog="classif"):
     if a.extra:
         # A pasted text with its own double quotes reaches us already split by
         # the shell; nothing here can rejoin it faithfully.
-        ap.error(f"got {2 + len(a.extra)} arguments, want at most 2 (question, text). "
-                 "Quotes inside the text split it; send the text on stdin instead: "
+        ap.error(f"got {2 + len(a.extra)} arguments, want at most 2 (question, text). The shell split a text "
+                 "into words: quote it, $(cmd) as \"$(cmd)\" too, or send it on stdin: "
                  "xsel -ob | classif \"question\"")
     out = sys.stdout
     if a.gate:
@@ -826,6 +849,11 @@ def main(argv=None, prog="classif"):
         # A one-word text after an unquoted description reads as its last word.
         ap.error("the words after an unquoted -e name= were read as its description, and no text is left. "
                  "Quote the description, or put a one-word text before -e")
+    if not text and context and a.input in (None, "-") and a.files is None and not piped():
+        # Given no INPUT at all, -c is what the question is asked of. An empty
+        # pipe or argument stays an empty INPUT: judging -c in its place could
+        # pass a policy down a -p gate.
+        raw, text, context, a.context = context, context, None, None
 
     t0 = time.monotonic()
     if a.why:
@@ -833,7 +861,7 @@ def main(argv=None, prog="classif"):
         # short text goes to the reader too instead of one whole read.
         if not text:
             ap.error("--why points at lines of the INPUT, and there is none: pass it after the question, pipe it "
-                     "in or use -i FILE" + ("; -c is the rules INPUT is judged by, not INPUT" if a.context else ""))
+                     "in, use -i FILE or -c")
         host, model = route()
         if not host:
             return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
@@ -845,7 +873,7 @@ def main(argv=None, prog="classif"):
     if r["label"] is None and r.get("overflow"):
         if not text:
             # Only -c overflowed: past the window the input is read in pieces,
-            # and with no input there is nothing to read, so no answer.
+            # and with an empty input there is nothing to read, so no answer.
             return unscored(r["unscored"] + ". -c is context added to every call and must fit the window; "
                             "pass a long source as the input with -i", a.json, host=r["host"])
         if not claim and a.enum is None:
