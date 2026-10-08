@@ -57,6 +57,34 @@ class EnumTests(unittest.TestCase):
         # The answer rests on the passage that voted for it, not the one voting paid.
         self.assertEqual(result["read"]["evidence"], [{"line": 3, "end": 3, "text": "That payment was reversed."}])
 
+    STATUS = "Invoice INV-42 was issued.\nIt was sent to the customer.\nThat payment was reversed.\nThe customer was notified."
+
+    def test_lines_narrow_a_voting_passage_to_the_line_that_gives_the_answer(self):
+        # Without lines the whole passage is cited; with them only the line that says reversed.
+        def ask(question, text, labels, options=None):
+            label = "2" if not question.startswith("Going only by") or "reversed" in text else "0"
+            return {"label": label, "p": {k: float(k == label) for k in labels}}
+        doc = self.mem.Doc(self.STATUS)
+        plain = self.mem.run_enum(doc, "What is the status?", ["paid", "reversed"], ask)
+        self.assertEqual([(e["line"], e["end"]) for e in plain["read"]["evidence"]], [(1, 4)])
+        result = self.mem.run_enum(doc, "What is the status?", ["paid", "reversed"], ask, lines=True)
+        self.assertEqual(result["label"], "reversed")
+        self.assertEqual(result["read"]["evidence"], [{"line": 3, "end": 3, "text": "That payment was reversed."}])
+        # Halves 1-2 and 3-4, then lines 3 and 4: four calls past the passage read and the judge.
+        self.assertEqual(result["read"]["lines"]["calls"], 4)
+        self.assertEqual(result["read"]["calls"], plain["read"]["calls"] + 4)
+
+    def test_lines_cite_a_passage_whole_when_no_part_gives_the_answer_alone(self):
+        # Reversed needs the invoice and the reversal together, so no half answers it.
+        def ask(question, text, labels, options=None):
+            both = "INV-42" in text and "reversed" in text
+            label = "2" if not question.startswith("Going only by") or both else "0"
+            return {"label": label, "p": {k: float(k == label) for k in labels}}
+        doc = self.mem.Doc(self.STATUS)
+        result = self.mem.run_enum(doc, "What is the status?", ["paid", "reversed"], ask, lines=True)
+        self.assertEqual([(e["line"], e["end"]) for e in result["read"]["evidence"]], [(1, 4)])
+        self.assertEqual(result["read"]["lines"]["calls"], 2)
+
     def test_none_requires_complete_passage_read(self):
         text = "Weather report.\nMaintenance schedule."
         _, ask, result = self.run_case(text, {s: "0" for s in text.splitlines()})

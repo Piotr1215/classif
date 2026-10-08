@@ -68,9 +68,10 @@ It has no label and passes no gate. A claim that names something the text
 names is answered first from the lines linked to it; when they do not settle
 it, every line is read.
 
--c FILE supplies a context the question is about, a policy or a reference,
-read before the text on every reader and judge call; the text is then the event or record
-the question is asked of. The context must fit the window with the text,
+-c FILE supplies the rules the text is judged by, a policy or a reference,
+read before the text on every reader and judge call. It is a file, or <(cmd)
+for a command's output; the text itself is the event or record the question
+is asked of, and goes after the question, on stdin or in -i FILE. The context must fit the window with the text,
 or with one passage on a long text; past that the server refuses and the
 result is unscored. -i FILE reads the input from a file and names it in the
 -j report; -i A,B or -i A -i B reads several as one input, each on its own
@@ -611,7 +612,10 @@ def read_context(ap, path):
         with open(path, "rb") as fh:
             context = fh.read().decode("utf-8", errors="replace").strip()
     except OSError as e:
-        ap.error(f"-c {path}: {e.strerror}")
+        # A text given where the file name goes would be echoed whole; its first words name it.
+        shown = path if len(path) <= 60 and "\n" not in path else path.split("\n")[0][:40] + "..."
+        ap.error(f"-c {shown}: {e.strerror}. -c names a file of rules the INPUT is judged by, such as -c rules.md "
+                 "or -c <(date); the text to judge goes after the question, on stdin or in -i FILE")
     if not context:
         ap.error(f"-c {path}: the file is empty")
     return context
@@ -754,8 +758,8 @@ def main(argv=None, prog="classif"):
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
                     help="bound all the work; a read cut short exits 3")
     ap.add_argument("-w", "--why", action="store_true",
-                    help="answer from a line-by-line read and print the lines it rests on; slower, and the answer "
-                         "can differ from the one-call one")
+                    help="print the lines the answer rests on; the text is read in pieces even when it fits, so "
+                         "it is slower and the answer can differ from the one-call one")
     ap.add_argument("--cache", action="store_true",
                     help="save readings, links and the passage index under ~/.cache/classif, so a repeat on the same "
                          "text reuses them; nothing is written to disk without it")
@@ -828,7 +832,8 @@ def main(argv=None, prog="classif"):
         # The lines an answer rests on come from reading line by line, so a
         # short text goes to the reader too instead of one whole read.
         if not text:
-            ap.error("--why points at lines of a text; pass one")
+            ap.error("--why points at lines of the INPUT, and there is none: pass it after the question, pipe it "
+                     "in or use -i FILE" + ("; -c is the rules INPUT is judged by, not INPUT" if a.context else ""))
         host, model = route()
         if not host:
             return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
@@ -999,8 +1004,8 @@ def why_lines(read):
     """--why's report: each run of lines the answer rests on as `  LINE: text`,
     or what it rests on when no line does."""
     if not read.get("evidence"):
-        return ["  (answered from counted facts and a sample, not from lines)" if read.get("basis") == "sample"
-                else "  (no line reads for or against it)"]
+        return ["  (answered from counted facts and a sample, not from lines)"
+                if read.get("basis") == "sample" and "lines" not in read else "  (no line reads for or against it)"]
     out = []
     for e in read["evidence"]:
         at = str(e["line"]) if e["end"] == e["line"] else f"{e['line']}-{e['end']}"

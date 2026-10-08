@@ -315,6 +315,63 @@ class AutoInputTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, self.SHORT), result.stderr)
         self.assertIn("2: Deployment failure: access denied.", result.stderr)
 
+    def test_why_on_a_whole_text_question_prints_the_lines_it_rests_on(self):
+        # The root call files the question under the whole text, answered from a
+        # sample; --why must still read those lines and print the one that fits.
+        def respond(body, n):
+            user = body["messages"][1]["content"]
+            if "Which kind is it?" in user:
+                return chat([(re.search(r"(\d)=it is about the document as a whole", user).group(1), -0.01)])
+            if "Taken alone" in user or "Does this passage" in user:
+                return chat([("fits" if "Hello there" in user else "unrelated", -0.01)])
+            return chat([("yes", -0.01)])
+        fake = self.serve(respond)
+        text = "Subject: hi\nHello there, how are you?\nRegards\n"
+        result = self.call(fake, "--why", "Is this a greeting?", text=text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        verdict, *lines = result.stdout.splitlines()
+        self.assertTrue(verdict.startswith("yes "), verdict)
+        self.assertEqual(lines, ["  2: Hello there, how are you?"])
+        read = json.loads(self.call(fake, "-j", "--why", "Is this a greeting?", text=text).stdout)["read"]
+        self.assertEqual((read["kind"]["kind"], read["basis"], read["lines"]["verdict"]), ("whole", "sample", "supported"))
+
+    def test_why_with_options_prints_the_line_not_the_passage(self):
+        def respond(body, n):
+            user = body["messages"][1]["content"]
+            if "Going only by this passage" in user:
+                return chat([("2" if "That payment was reversed." in user else "0", -0.01)])
+            return chat([("2", -0.01)])
+        fake = self.serve(respond)
+        text = ("Invoice INV-42 was issued.\nIt was sent to the customer.\nThat payment was reversed.\n"
+                "The customer was notified.\n")
+        result = self.call(fake, "--why", "-e", "paid,reversed", "What is the status?", text=text)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        verdict, *lines = result.stdout.splitlines()
+        self.assertTrue(verdict.startswith("reversed "), verdict)
+        self.assertEqual(lines, ["  3: That payment was reversed."])
+
+    def test_why_without_input_says_c_is_not_the_input(self):
+        fake = self.serve(lambda *_: chat([("yes", -0.01)]))
+        rules = Path(self.tmp.name) / "rules.txt"
+        rules.write_text("Good help names every flag.\n")
+        result = self.call(fake, "--why", "-c", str(rules), "Is this good help?", text="")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--why points at lines of the INPUT, and there is none", result.stderr)
+        self.assertIn("-c is the rules INPUT is judged by, not INPUT", result.stderr)
+        self.assertEqual(fake.requests, [])
+
+    def test_a_missing_c_file_says_where_the_text_goes(self):
+        fake = self.serve(lambda *_: chat([("yes", -0.01)]))
+        result = self.call(fake, "-c", " H", "Is this good help?", text="Usage: classif QUESTION")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("-c  H: No such file or directory. -c names a file of rules the INPUT is judged by",
+                      result.stderr)
+        # A whole text passed to -c is named by its first words, not echoed back.
+        result = self.call(fake, "-c", "usage: classif QUESTION\n" + "a flag\n" * 500, "Is this good help?", text="x")
+        self.assertIn("-c usage: classif QUESTION...: ", result.stderr)
+        self.assertNotIn("a flag", result.stderr)
+        self.assertEqual(fake.requests, [])
+
     def test_why_says_so_when_no_line_settles_the_answer(self):
         def respond(body, n):
             user = body["messages"][1]["content"]

@@ -107,7 +107,7 @@ Plain output is `LABEL P`. `-j` returns JSON with scores, model and execution me
 
 `-t P` sets a probability floor. `-d SECONDS` bounds the work. `-p` emits input only when the first label wins and meets any supplied threshold. Failed or incomplete decisions, and decisions below a supplied `-t` floor, emit nothing. A low score alone does not block input. Inspect the exit status to route results separately; the last command's status in a pipe does not preserve classif's status.
 
-`-w`, or `--why`, uses the line reader and prints supporting lines. It is slower and can differ from a single whole-input decision. Memory-mode JSON includes evidence, source offsets and the answer's basis for applications to show before acting.
+`-w`, or `--why`, prints the lines the answer rests on: the lines that fit or break a claim, or with `-e` the smallest runs that give the chosen option alone. It is slower and can differ from a single whole-input decision. Memory-mode JSON includes evidence, source offsets and the answer's basis for applications to show before acting.
 
 `classif tag` asks several questions about one text and reads the text once, printing one `NAME ANSWER P` line per question; see [several questions, one text](docs/reference.md#several-questions-one-text).
 

@@ -1084,7 +1084,7 @@ class Graph:
 
 
 def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=3000, leaf=None, share=False,
-             progress=None):
+             progress=None, lines=False):
     """Pick one of the named options for a question about a document, or
     none. ask(question, text, labels, options) is judge.judge's -e shape: the
     labels are digits, 0 is "none of these". Every passage of block chars is
@@ -1093,9 +1093,10 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
     insufficient: nine old passages saying paid would outvote the one that
     reverses it. share=True is the caller saying the question is about what
     most of the text is; then the judge reads the surest passages and its
-    answer stands if it is also the option the passages voted for. Returns
-    {verdict, label, p, read}: verdict answered, none, insufficient or
-    unscored."""
+    answer stands if it is also the option the passages voted for.
+    lines=True narrows each passage that voted for the answer to the runs
+    that give it alone (read.lines). Returns {verdict, label, p, read}:
+    verdict answered, none, insufficient or unscored."""
     if not 1 <= len(names) <= 9:
         raise ValueError(f"need 1 to 9 options, got {len(names)}")
     t0, leaf, calls = time.monotonic(), leaf or ask, 0
@@ -1109,19 +1110,43 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
     def text(blk):
         return doc.text[doc.spans[blk[0]][0]:doc.spans[blk[-1]][1]]
 
+    def narrow(blk, want):
+        """The smallest runs of blk that give want by themselves: a half that
+        still gives it alone is halved again. A run no half of which gives it
+        alone is cited whole, as is one the deadline stops."""
+        nonlocal calls
+        if len(blk) == 1:
+            return [blk]
+        found = []
+        for half in (blk[:len(blk) // 2], blk[len(blk) // 2:]):
+            if deadline is not None and time.monotonic() - t0 > deadline:
+                return [blk]
+            r = leaf(ENUM_QUESTION.format(question=question), text(half), labels, options)
+            calls += 1
+            if cut_short(r):
+                return [blk]
+            if show.get(r.get("label")) == want:
+                found += narrow(half, want)
+        return found or [blk]
+
     def done(verdict, label=None, p=None, basis="none", why="", judged=()):
         votes = {n: 0.0 for n in names}
         for _, r in rows:
             if r["label"] != "0":
                 for l, n in zip(labels, names):
                     votes[n] += r["p"][l]
+        # The judged passages that themselves voted for the answer.
+        voted = [b for b, r in rows if b in judged and label not in (None, "none") and show.get(r["label"]) == label]
+        cited = [i for b in voted for i in b]
+        if lines and voted:
+            t1, before = time.monotonic(), calls
+            cited = [i for b in voted for run_ in narrow(b, label) for i in run_]
+            read["lines"] = {"calls": calls - before, "ms": round((time.monotonic() - t1) * 1000)}
         read.update(checked=len(rows), failed=len(failed), flagged=sum(r["label"] != "0" for _, r in rows),
                     votes={n: round(v, 3) for n, v in votes.items()}, basis=basis,
                     sources=[{"span": [b[0], b[-1]], "start": doc.spans[b[0]][0], "end": doc.spans[b[-1]][1]}
                              for b in sorted(judged)],
-                    # The judged passages that themselves voted for the answer.
-                    evidence=evidence(doc, [i for b, r in rows if b in judged and label not in (None, "none")
-                                            and show.get(r["label"]) == label for i in b]),
+                    evidence=evidence(doc, cited),
                     why=why, calls=calls, ms=round((time.monotonic() - t0) * 1000))
         return {"verdict": verdict, "label": label, "p": p, "read": read}
 
@@ -1278,6 +1303,19 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
     def leaf(q, txt, labels, options=None):
         return bounded(klass.judge(q, txt, labels, options, model=reader_model, host=host, num_ctx=reader_ctx,
                                    timeout=left(), context=ctx(q)))
+    def rest_on(r, stop_at=None):
+        """--why after an answer judged from passages or a sample: read what
+        the judge read, line by line, for the lines the answer rests on."""
+        nonlocal deadline
+        t1 = time.monotonic()
+        lines_ = run(doc, question, ask, "auto", only=r["read"]["judged"], deadline=deadline, jobs=jobs,
+                     leaf=reader, block=CHUNK, stop_at=stop_at, progress=progress)
+        r["read"]["evidence"] = lines_["read"].get("evidence", [])
+        r["read"]["lines"] = {k: lines_["read"].get(k) for k in ("why", "calls", "ms")}
+        r["read"]["lines"]["verdict"] = lines_["verdict"]
+        r["read"]["calls"] += lines_["read"]["calls"]
+        if deadline is not None:
+            deadline = max(0.0, deadline - (time.monotonic() - t1))
     reader, saved = (leaf if reader_model else ask), None
     if cache:
         saved = Saved(os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "classif",
@@ -1301,7 +1339,7 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
         t0 = time.monotonic()
     if names:
         r = run_enum(doc, question, shown, ask, deadline=deadline, block=block or 3000, leaf=reader, share=share,
-                     progress=progress)
+                     progress=progress, lines=evidence)
         back = dict(zip(shown, names), none="none")
         r["label"] = back.get(r["label"])
         r["p"] = {back[k]: v for k, v in r["p"].items()} if r["p"] else None
@@ -1316,6 +1354,8 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
                 deadline = max(0.0, deadline - (time.monotonic() - t1))
             if picked[0] == "whole":
                 r = whole(doc, question, ask)
+                if evidence and r["label"]:
+                    rest_on(r)
         top = KINDS.get(picked[2].get("label"), (None,))[0] if picked and picked[2] else None
         # The search: index once, judge the closest passages in one call. The
         # root call's top pick names the mode even when it was unsure, and an
@@ -1356,14 +1396,7 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
                     (top == "exists" and searched["read"]["by"] == "meaning and words") or top == "state")):
                 r, searched = searched, None
                 if evidence:
-                    lines_ = run(doc, question, ask, "auto", only=r["read"]["judged"], deadline=deadline, jobs=jobs,
-                                 leaf=reader, block=CHUNK, stop_at=top, progress=progress)
-                    r["read"]["evidence"] = lines_["read"].get("evidence", [])
-                    r["read"]["lines"] = {k: lines_["read"].get(k) for k in ("verdict", "why", "calls", "ms")}
-                    r["read"]["lines"]["verdict"] = lines_["verdict"]
-                    r["read"]["calls"] += lines_["read"]["calls"]
-                    if deadline is not None:
-                        deadline = max(0.0, deadline - (time.monotonic() - t1))
+                    rest_on(r, top)
         if r is None and plan == "auto" and not graph and picked[0] not in ("exists", "all"):
             # The lines linked to what the claim names come first: a confident
             # answer from them stands, anything else falls back to the full read.
