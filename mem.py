@@ -1091,11 +1091,12 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
     asked the question; the ones that answer none are dismissed; one final
     call reads the rest. When they do not all fit the budget the result is
     insufficient: nine old passages saying paid would outvote the one that
-    reverses it. share=True is the caller saying the question is about what
+    reverses it. Passages that all voted for one option leave no minority to
+    outvote, so the judge reads the surest that fit, as under share. share=True is the caller saying the question is about what
     most of the text is; then the judge reads the surest passages and its
     answer stands if it is also the option the passages voted for.
-    lines=True narrows each passage that voted for the answer to the runs
-    that give it alone (read.lines). Returns {verdict, label, p, read}:
+    lines=True narrows each passage that voted for the answer to a run that
+    gives it alone (read.lines). Returns {verdict, label, p, read}:
     verdict answered, none, insufficient or unscored."""
     if not 1 <= len(names) <= 9:
         raise ValueError(f"need 1 to 9 options, got {len(names)}")
@@ -1111,23 +1112,23 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
         return doc.text[doc.spans[blk[0]][0]:doc.spans[blk[-1]][1]]
 
     def narrow(blk, want):
-        """The smallest runs of blk that give want by themselves: a half that
-        still gives it alone is halved again. A run no half of which gives it
-        alone is cited whole, as is one the deadline stops."""
+        """A run of blk that gives want by itself: the first half that still
+        gives it alone is halved again, so a passage where every line gives it
+        costs two calls per halving, not two per line. A run no half of which
+        gives it alone is cited whole, as is one the deadline stops."""
         nonlocal calls
         if len(blk) == 1:
-            return [blk]
-        found = []
+            return blk
         for half in (blk[:len(blk) // 2], blk[len(blk) // 2:]):
             if deadline is not None and time.monotonic() - t0 > deadline:
-                return [blk]
+                return blk
             r = leaf(ENUM_QUESTION.format(question=question), text(half), labels, options)
             calls += 1
             if cut_short(r):
-                return [blk]
+                return blk
             if show.get(r.get("label")) == want:
-                found += narrow(half, want)
-        return found or [blk]
+                return narrow(half, want)
+        return blk
 
     def done(verdict, label=None, p=None, basis="none", why="", judged=()):
         votes = {n: 0.0 for n in names}
@@ -1140,7 +1141,7 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
         cited = [i for b in voted for i in b]
         if lines and voted:
             t1, before = time.monotonic(), calls
-            cited = [i for b in voted for run_ in narrow(b, label) for i in run_]
+            cited = [i for b in voted for i in narrow(b, label)]
             read["lines"] = {"calls": calls - before, "ms": round((time.monotonic() - t1) * 1000)}
         read.update(checked=len(rows), failed=len(failed), flagged=sum(r["label"] != "0" for _, r in rows),
                     votes={n: round(v, 3) for n, v in votes.items()}, basis=basis,
@@ -1177,7 +1178,8 @@ def run_enum(doc, question, names, ask, deadline=None, budget=3 * BUDGET, block=
             break
         kept.append(blk)
         used += len(text(blk)) + 1
-    if not kept or (len(kept) < len(flagged) and not share):
+    unanimous = len({r["label"] for _, r in flagged}) == 1
+    if not kept or (len(kept) < len(flagged) and not (share or unanimous)):
         return done("insufficient", why=f"{len(flagged) - len(kept)} of {len(flagged)} flagged passages do not fit "
                     f"the judge's budget of {budget} chars")
     if deadline is not None and time.monotonic() - t0 > deadline:

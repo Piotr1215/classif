@@ -70,9 +70,28 @@ class EnumTests(unittest.TestCase):
         result = self.mem.run_enum(doc, "What is the status?", ["paid", "reversed"], ask, lines=True)
         self.assertEqual(result["label"], "reversed")
         self.assertEqual(result["read"]["evidence"], [{"line": 3, "end": 3, "text": "That payment was reversed."}])
-        # Halves 1-2 and 3-4, then lines 3 and 4: four calls past the passage read and the judge.
-        self.assertEqual(result["read"]["lines"]["calls"], 4)
-        self.assertEqual(result["read"]["calls"], plain["read"]["calls"] + 4)
+        # Halves 1-2 and 3-4, then line 3, which gives it: three calls past the passage read and the judge.
+        self.assertEqual(result["read"]["lines"]["calls"], 3)
+        self.assertEqual(result["read"]["calls"], plain["read"]["calls"] + 3)
+
+    def test_lines_stop_at_the_first_run_when_every_line_gives_the_answer(self):
+        # Every line of a source file says python; narrowing them all would cost two calls a line.
+        def ask(question, text, labels, options=None):
+            return {"label": "1", "p": {k: float(k == "1") for k in labels}}
+        doc = self.mem.Doc("\n".join(f"import mod{i}" for i in range(8)))
+        result = self.mem.run_enum(doc, "Which language?", ["python", "go"], ask, lines=True)
+        self.assertEqual(result["read"]["evidence"], [{"line": 1, "end": 1, "text": "import mod0"}])
+        self.assertEqual(result["read"]["lines"]["calls"], 3)
+
+    def test_a_unanimous_vote_too_big_for_the_judge_answers_from_the_surest_passages(self):
+        # No passage voted otherwise, so none can be outvoted by the ones left out.
+        text = "Service maintenance entry.\nService maintenance update.\nService maintenance log."
+        ask = EnumAsk({line: "1" for line in text.splitlines()}, final="1")
+        result = self.mem.run_enum(self.mem.Doc(text), "What predominates?", ["maintenance", "delivery"], ask,
+                                   block=1, budget=len(text.splitlines()[0]) + 1)
+        self.assertEqual((result["verdict"], result["label"], result["read"]["basis"]),
+                         ("answered", "maintenance", "vote"))
+        self.assertEqual(len(result["read"]["sources"]), 1)
 
     def test_lines_cite_a_passage_whole_when_no_part_gives_the_answer_alone(self):
         # Reversed needs the invoice and the reversal together, so no half answers it.
