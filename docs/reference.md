@@ -59,24 +59,24 @@ The second answer held up in every set: 104, 103 and 68 right at position 2 agai
 
 Bare digits without keys ("12") let the second answer copy the first: "needs a reply?" asked after "newsletter?" agreed with its own call 16 times in 55, keyed 51. Pretty-printed JSON spent 28 generated tokens on three questions; the prompt asks for one line, which takes 15.
 
-## One question, many candidates
+## One question, many items
 
-`classif rank QUESTION CANDIDATE ...` asks the question of each candidate as its own call and prints them best first, so a list of any length is ordered. Candidates are arguments, lines on stdin (plain text, or JSON `{"name", "text"}`), or files with `-i FILE ...`, one candidate each, named by the file name.
+`classif each QUESTION ITEM ...` asks the question of each item as its own call and prints them best first, so a list of any length is ordered. Items are arguments, lines on stdin (plain text, or JSON `{"name", "text"}`), or files with `-i FILE ...`, one item each, named by the file name.
 
 ```sh
-classif rank "Is this the right next step?" -c goals.md "renew the passport" "Sign up for a 10-week running plan"
-p(yes)  answer     candidate
+classif each "Is this the right next step?" -c goals.md "renew the passport" "Sign up for a 10-week running plan"
+p(yes)  answer     item
 0.882   yes 0.882  Sign up for a 10-week running plan
 0.003   no 0.986   renew the passport
 ```
 
-- The score is p(yes), or with `-e` p of the first option; the answer column shows what each candidate got. `-e` takes any number of options plus `none`, as for a question; past nine, each candidate's options are screened, and its score is the first option's p(yes) from its own call.
-- `-c` is read before every candidate. With no candidates and no pipe, `-c` is the one candidate, as for a question.
-- `-k N` prints the top N. `-j` prints `{question, options, context, ranking, unscored, model, host}`, each ranking row with `name`, `score`, `label`, `p` and, under `-w`, `marks`.
+- The score is p(yes), or with `-e` p of the first option; the answer column shows what each item got. `-e` takes any number of options plus `none`, as for a question; past nine, each item's options are screened, and its score is the first option's p(yes) from its own call.
+- `-c` is read before every item. With no items and no pipe, `-c` is the one item, as for a question.
+- `-k N` prints the top N. `-j` prints `{question, options, context, items, unscored, model, host}`, each item with `name`, `score`, `label`, `p` and, under `-w`, `marks`.
 - `-w` marks the top pick: each non-blank line of its text (2 to 60 lines), then of `-c` (1 to 60 lines), is left out and the question asked again. Up to three lines whose removal moves the score by 0.005 or more are printed, `+` for a line that raised it. A mark is sensitivity from the same one-call reading as the answer, not the line-by-line read of `--why` on a question.
-- Exit 0 when something ranked, 2 when nothing could be scored. A candidate that cannot be scored, such as one past the window, is left out with a note on stderr and in `-j`'s `unscored`.
+- Exit 0 when some item was scored, 2 when none could be. An item that cannot be scored, such as one past the window, is left out with a note on stderr and in `-j`'s `unscored`.
 
-Each call is the direct path above with its own timeout; candidates are judged one after another on one host.
+Each call is the direct path above with its own timeout; items are judged one after another on one host.
 
 ## Past nine options
 

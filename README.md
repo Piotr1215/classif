@@ -117,9 +117,9 @@ Pick the command by how many questions you ask and how many texts they are about
 | --- | --- | --- | --- | --- |
 | `classif` | 1 | 1 | one verdict | `ls \| classif "Is there a license file?"` |
 | `classif tag` | many | 1 | one verdict per question | `ls \| classif tag 'license=present,absent' 'tests=present,absent'` |
-| `classif rank` | 1 | many | the texts, sorted | `ls -l \| classif rank "Is this a folder?"` |
+| `classif each` | 1 | many | one verdict per text, best first | `ls -l \| classif each "Is this a folder?"` |
 
-`tag` reads all of its input as one text. `rank` reads each input line as its own text, or each argument, or each `-i` file.
+`tag` reads all of its input as one text. `each` reads each input line as its own text, or each argument, or each `-i` file.
 
 `classif tag` asks several questions about one text and reads the text once, printing one `NAME ANSWER P` line per question; see [several questions, one text](docs/reference.md#several-questions-one-text).
 
@@ -128,14 +128,14 @@ notmuch show --format=raw id:x |
   ./classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'
 ```
 
-`classif rank` asks one question of each candidate, any number of them, and prints them best first; see [one question, many candidates](docs/reference.md#one-question-many-candidates).
+`classif each` asks one question of each item in a list, any number of them, and prints them best first; see [one question, many items](docs/reference.md#one-question-many-items).
 
 ```sh
 task export | jq -r '.[].description' |
-  ./classif rank "What should happen to this task?" -c goals.md -e prioritize,defer,drop
+  ./classif each "What should happen to this task?" -c goals.md -e prioritize,defer,drop
 ```
 
-See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and ranking long lists. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
+See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and sorting long lists. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
 
 ## Architecture
 

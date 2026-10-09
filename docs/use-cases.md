@@ -208,9 +208,9 @@ The field numbers are character limits. This example uses only the first 3000 ch
 
 To keep your own specs without `CLASSIF_DIR`, put them in `~/.config/classif/specs`, and run `unset CLASSIF_DIR` after this example. `classif specs` lists every spec it finds, the fields each wants and its file. Run `./classif --help` for the available commands.
 
-## Rank many candidates
+## Sort a list
 
-`--enum` picks one answer, from a list of any length. A to-do list, a set of offers or every repository you touched this month is often wanted ordered, not one picked. `classif rank` asks each candidate the question as its own call, so the list can be any length. Each call stays inside what a small model does well: one yes/no question about one short text, or a few described options.
+`--enum` picks one answer, from a list of any length. A to-do list, a set of offers or every repository you touched this month is often wanted ordered, not one picked. `classif each` asks each item the question as its own call, so the list can be any length. Each call stays inside what a small model does well: one yes/no question about one short text, or a few described options.
 
 Write the goals the tasks are judged against, then let each task take a verdict:
 
@@ -222,13 +222,13 @@ Constraint: two free evenings a week
 GOALS
 printf '%s\n' "Sign up for a 10-week running plan" "Rewrite the side project's CLI in Go" \
   "Write the landing page for the side project" "Reorganize the bookshelf" |
-  classif rank "What should happen to this task?" -c goals.md -k 3 -w \
+  classif each "What should happen to this task?" -c goals.md -k 3 -w \
     -e "prioritize=do it this week, it moves a goal forward" \
     -e "defer=worth doing, not now" -e "drop=serves no goal"
 ```
 
 ```text
-p(prioritize)  answer            candidate
+p(prioritize)  answer            item
 0.979          prioritize 0.979  Sign up for a 10-week running plan
 0.873          prioritize 0.873  Write the landing page for the side project
 0.028          drop 0.914        Rewrite the side project's CLI in Go
@@ -239,13 +239,13 @@ why Sign up for a 10-week running plan: the lines whose removal moves p(prioriti
   -0.006  context: Constraint: two free evenings a week
 ```
 
-With `-e` the score is p of the first option, so the list is ordered by how surely each task should be prioritized; the answer column shows what each task got. Without `-e` the score is p(yes). `-k 3` prints the top three. Candidates are lines on stdin (or JSON lines `{"name", "text"}`), arguments after the question, or files with `-i`, one candidate each:
+With `-e` the score is p of the first option, so the list is ordered by how surely each task should be prioritized; the answer column shows what each task got. Without `-e` the score is p(yes). `-k 3` prints the top three. Items are lines on stdin (or JSON lines `{"name", "text"}`), arguments after the question, or files with `-i`, one item each:
 
 ```sh
-classif rank "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
-classif rank "Does this offer pay above market?" -c market.md -i offers/*.md
+classif each "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
+classif each "Does this offer pay above market?" -c market.md -i offers/*.md
 ```
 
 `-w` explains the top pick. Each line of its text, then of the context, is left out in turn and the question asked again; the lines whose removal moves the score most are printed. They come from the same one-call reading as the answer, so they cannot disagree with it, as a line-by-line `classif --why` reading can. Here the running plan rests on the half-marathon goal: without that line, p(prioritize) falls by 0.973. A mark shows what p is sensitive to, not how the model reasoned; on boilerplate such as a license it can land on a line like `SOFTWARE.`, so check that a mark makes sense before trusting it.
 
-Weighing several questions is a script: run `classif rank -j` once per question and multiply the p each candidate should get. Keep the context short, a hand-written list of goals rather than a folder of notes: it must fit the model's window beside each candidate, and a context over 60 lines is not marked. The cost is one call per candidate, plus one per line for `-w`. Each candidate is judged alone, so two tasks at 0.97 and 0.96 are a tie, not an order.
+Weighing several questions is a script: run `classif each -j` once per question and multiply the p each item should get. Keep the context short, a hand-written list of goals rather than a folder of notes: it must fit the model's window beside each item, and a context over 60 lines is not marked. The cost is one call per item, plus one per line for `-w`. Each item is judged alone, so two tasks at 0.97 and 0.96 are a tie, not an order.

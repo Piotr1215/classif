@@ -399,7 +399,7 @@ def classify(name, pairs, hook="classify"):
     return 0 if r["label"] == spec["labels"][0] else 1
 
 
-COMMANDS = ("specs", "classify", "smoke", "unload", "histogram", "tag", "rank")
+COMMANDS = ("specs", "classify", "smoke", "unload", "histogram", "tag", "each")
 
 
 def main():
@@ -410,9 +410,9 @@ def main():
         return 2
     if first == "tag":
         return cls.tag_main(sys.argv[2:])
-    if first == "rank":
+    if first == "each":
         try:
-            return cls.rank_main(sys.argv[2:])
+            return cls.each_main(sys.argv[2:])
         except BrokenPipeError:
             # A reader such as head -3 has what it wanted.
             return 0
@@ -432,7 +432,7 @@ def main():
         # the classif skill) use the rest, which each still answer -h.
         print("\nCommands: classif COMMAND ..., see classif COMMAND -h")
         for name, what in (("tag", "ask several questions about one text, read once"),
-                           ("rank", "ask one question of many candidates, best first"),
+                           ("each", "ask one question of each item in a list, best first"),
                            ("specs", "list the saved questions (specs) and the fields each wants"),
                            ("histogram", "how sure a spec's answers have been, from the log"),
                            ("unload", "free the GPU; the next call loads the models again")):

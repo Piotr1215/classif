@@ -767,13 +767,13 @@ def tag_main(argv, prog="classif tag"):
     return code
 
 
-RANK_EPILOG = """\
-Output: one row per candidate, best first: the score, the answer with its p, the candidate; -j for JSON. Exit: 0 when something ranked, 2 when nothing could be scored. A candidate classif cannot score is left out with a note on stderr.
+EACH_EPILOG = """\
+Output: one row per item, best first: the score, the answer with its p, the item; -j for JSON. Exit: 0 when some item was scored, 2 when none could be. An item classif cannot score is left out with a note on stderr.
 
-    classif rank "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
-    task export | jq -r '.[].description' | classif rank "What should happen to this task?" -c goals.md \\
+    classif each "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
+    task export | jq -r '.[].description' | classif each "What should happen to this task?" -c goals.md \\
         -e "prioritize=do it this week" -e "defer=worth doing, not now" -e "drop=serves no goal"
-    classif rank "Does this offer pay above market?" -c market.md -i offers/*.md"""
+    classif each "Does this offer pay above market?" -c market.md -i offers/*.md"""
 MARK_LINES = 60     # one call per line, so longer texts and contexts are not marked
 MARK_MIN = 0.005    # a smaller move is noise: identical runs differ by about 0.001
 MARKS = 3
@@ -784,15 +784,15 @@ MARKS = 3
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
-def candidates(ap, texts, files):
-    """The candidates as [{name, text}]: each argument, then each -i file named
+def items(ap, texts, files):
+    """The items as [{name, text}]: each argument, then each -i file named
     by its file name; else each stdin line, plain text or JSON {"name", "text"}.
     Terminal escapes are dropped: they mean nothing to the model, and a name
     that starts with them prints as noise."""
-    return [{k: ANSI.sub("", v) for k, v in c.items()} for c in read_candidates(ap, texts, files)]
+    return [{k: ANSI.sub("", v) for k, v in c.items()} for c in read_items(ap, texts, files)]
 
 
-def read_candidates(ap, texts, files):
+def read_items(ap, texts, files):
     out = [{"name": t, "text": t} for t in texts]
     for path in files or []:
         try:
@@ -836,45 +836,45 @@ def short(s, n=60):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def rank_main(argv, prog="classif rank"):
-    """classif rank: one question asked of each candidate, best first."""
+def each_main(argv, prog="classif each"):
+    """classif each: one question asked of each item, best first."""
     global PROG
     PROG = prog
     ap = argparse.ArgumentParser(
-        prog=prog, formatter_class=Help, epilog=RANK_EPILOG,
-        usage="%(prog)s [options] QUESTION CANDIDATE ...\n       cmd | %(prog)s [options] QUESTION\n"
+        prog=prog, formatter_class=Help, epilog=EACH_EPILOG,
+        usage="%(prog)s [options] QUESTION ITEM ...\n       cmd | %(prog)s [options] QUESTION\n"
               "       %(prog)s [options] QUESTION -i FILE ...",
-        description="Ask one question of each candidate and rank them, best first: by p(yes), or with -e by p of "
-                    "the first option. Each candidate is its own call, so any number rank; a model answers one "
+        description="Ask one question of each item and sort them, best first: by p(yes), or with -e by p of "
+                    "the first option. Each item is its own call, so a list of any length works; a model answers one "
                     "question about one text well and picks among many poorly.")
     ap.add_argument("question", metavar="QUESTION", help="a yes/no question, or with -e the question the options answer")
-    ap.add_argument("texts", nargs="*", metavar="CANDIDATE", help="a candidate as text, one per argument")
+    ap.add_argument("texts", nargs="*", metavar="ITEM", help="an item as text, one per argument")
     ap.add_argument("-e", "--enum", action="append", metavar="OPTION",
                     help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
-                         "option is the one candidates rank by")
+                         "option is the one items sort by")
     ap.add_argument("-c", "--context", metavar="TEXT",
-                    help="background read before every candidate, such as goals: a file, <(cmd) or the text itself. "
-                         "With no candidates, it is the one judged")
+                    help="background read before every item, such as goals: a file, <(cmd) or the text itself. "
+                         "With no items, it is the one judged")
     ap.add_argument("-i", "--input", dest="files", action="extend", nargs="+", metavar="FILE",
-                    help="candidates, one per file, each named by its file name")
+                    help="items, one per file, each named by its file name")
     ap.add_argument("-k", "--top", type=int, metavar="N", help="show only the top N")
     ap.add_argument("-w", "--why", action="store_true",
                     help="for the top pick, the lines of its text and of -c whose removal moves its score most. One "
                          "call per line, so a text or context over 60 lines is not marked")
-    ap.add_argument("-j", "--json", action="store_true", help="print the ranking as JSON")
+    ap.add_argument("-j", "--json", action="store_true", help="print the items as JSON")
     a = ap.parse_intermixed_args(join_descriptions(argv))
     if a.top is not None and a.top < 1:
         ap.error(f"-k wants 1 or more, got {a.top}")
     labels, names, options = enum_labels(ap, a.enum, most=None) if a.enum else (DEFAULT_LABELS.split(","), None, None)
     first = (names or labels)[0]
     context = read_context(ap, a.context)
-    cands = candidates(ap, a.texts, a.files)
+    cands = items(ap, a.texts, a.files)
     if not cands and context and not piped():
         # As in classif: given no input, -c is what the question is asked of.
         name = os.path.basename(a.context) if os.path.isfile(a.context) else "context"
         cands, context = [{"name": name, "text": context}], None
     if not cands:
-        ap.error("no candidates: pass them after the question, one per line on stdin, or -i FILE ...")
+        ap.error("no items: pass them after the question, one per line on stdin, or -i FILE ...")
 
     host, model = route()
     if not host:
@@ -898,21 +898,21 @@ def rank_main(argv, prog="classif rank"):
         p = {show[l]: v for l, v in r["p"].items()}
         return {"label": show[r["label"]], "p": p, "score": yes[first] if yes else p[first]}
 
-    ranked, missed = [], []
+    scored, missed = [], []
     for c in cands:
         r = ask(c["text"], context)
         if r["label"] is None:
-            why = r["unscored"] + (". rank reads each candidate in one call, so it must fit the window"
+            why = r["unscored"] + (". each reads an item in one call, so it must fit the window"
                                    if r.get("overflow") else "")
             missed.append({"name": c["name"], "unscored": why})
             print(f"{PROG}: {short(c['name'])}: unscored: {why}", file=sys.stderr)
             continue
-        ranked.append({"name": c["name"], "score": r["score"], "label": r["label"], "p": r["p"], "text": c["text"]})
-    if not ranked:
+        scored.append({"name": c["name"], "score": r["score"], "label": r["label"], "p": r["p"], "text": c["text"]})
+    if not scored:
         return 2
-    # Stable: a tie keeps the order the candidates came in.
-    ranked.sort(key=lambda row: -row["score"])
-    top = ranked[0]
+    # Stable: a tie keeps the order the items came in.
+    scored.sort(key=lambda row: -row["score"])
+    top = scored[0]
     if a.why:
         cut = without_each_line(top["text"], context)
         if cut is None:
@@ -924,17 +924,17 @@ def rank_main(argv, prog="classif rank"):
                 if r["label"] is not None and abs(top["score"] - r["score"]) >= MARK_MIN:
                     top["marks"].append({"from": source, "line": line, "delta": round(top["score"] - r["score"], 4)})
             top["marks"] = sorted(top["marks"], key=lambda m: -abs(m["delta"]))[:MARKS]
-    shown = ranked[:a.top] if a.top else ranked
+    shown = scored[:a.top] if a.top else scored
 
     if a.json:
         rows = [{"name": row["name"], "score": round(row["score"], 4), "label": row["label"],
                  "p": {l: round(v, 4) for l, v in row["p"].items()},
                  **{k: row[k] for k in ("marks", "unmarked") if k in row}} for row in shown]
         dump({"question": a.question, **({"options": names[:-1]} if names else {}),
-              **({"context": a.context} if context else {}), "ranking": rows,
+              **({"context": a.context} if context else {}), "items": rows,
               **({"unscored": missed} if missed else {}), "model": model, "host": host})
         return 0
-    table = [[f"p({first})", "answer", "candidate"]] + [
+    table = [[f"p({first})", "answer", "item"]] + [
         [f"{row['score']:.3f}", f"{row['label']} {row['p'][row['label']]:.3f}", short(row["name"])] for row in shown]
     widths = [max(len(row[i]) for row in table) for i in range(2)]
     for row in table:

@@ -86,12 +86,12 @@ class Flags(E2E):
         self.assertEqual(len(d["p"]), 3 + 1)
         self.assertIn(d["label"], d["p"])
 
-    def test_rank_orders_every_candidate_best_first(self):
-        r = self.cli("rank", "-j", "Is this a fruit?", "a hammer", "an apple", "a pear")
+    def test_each_sorts_every_item_best_first(self):
+        r = self.cli("each", "-j", "Is this a fruit?", "a hammer", "an apple", "a pear")
         d = json.loads(r.out)
         self.assertEqual(r.rc, 0)
-        self.assertEqual(sorted(row["name"] for row in d["ranking"]), ["a hammer", "a pear", "an apple"])
-        scores = [row["score"] for row in d["ranking"]]
+        self.assertEqual(sorted(row["name"] for row in d["items"]), ["a hammer", "a pear", "an apple"])
+        scores = [row["score"] for row in d["items"]]
         self.assertEqual(scores, sorted(scores, reverse=True))
 
     def test_files_joined_with_a_comma_read_as_repeated_i(self):
@@ -138,9 +138,9 @@ class FlagJudgement(E2E):
                            ("pack the folder into one archive file", "tar")):
             self.assertEqual(self.label("Which command does this describe?", text, "-e", COMMANDS), (1, want))
 
-    def test_rank_puts_the_fruit_first(self):
-        d = json.loads(self.cli("rank", "-j", "Is this a fruit?", "a hammer", "an apple").out)
-        self.assertEqual([row["name"] for row in d["ranking"]], ["an apple", "a hammer"])
+    def test_each_puts_the_fruit_first(self):
+        d = json.loads(self.cli("each", "-j", "Is this a fruit?", "a hammer", "an apple").out)
+        self.assertEqual([row["name"] for row in d["items"]], ["an apple", "a hammer"])
 
     def test_a_policy_in_context_turns_unknown_into_yes(self):
         policy = self.write("policy.txt", "Change policy: no production deploys after 18:00 on Fridays.\n")
