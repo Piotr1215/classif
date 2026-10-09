@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
-"""Rank candidates on yes/no criteria a local model answers, mark the lines
-each top answer rests on, and keep a record of the decision.
+"""Rank candidates on a question a local model answers, mark the lines each
+top answer is most sensitive to, and keep a record of the decision.
 
 classif over a list: the same question asked of every candidate, then the
-candidates ranked. A small local model answers one yes/no claim about one text
+candidates ranked. A small local model answers one question about one text
 well and a many-way pick poorly, and classif -e stops at nine options. So
-classif asks every candidate every criterion as its own call, and the score is
-the product of the p each criterion wants. Any number of candidates and
-criteria.
+classif asks every candidate the question as its own call. Any number of
+candidates.
 
 QUESTION is asked as in classif: a yes/no question whose p(yes) is the
 score, or with -e (repeatable, as classif -e: name or name=description) the
 question of a verdict each candidate gets. Three described options is the
-shape classif's evals measured. With a verdict and no yes/no criteria the
-score is p of the first option, so -e "prioritize=...,..." ranks by how surely
-each candidate should be prioritized. -y QUESTION and -n QUESTION add criteria
-that want yes or no.
+shape classif's evals measured. With a verdict the score is p of the first
+option, so -e "prioritize=...,..." ranks by how surely each candidate should
+be prioritized. A decision that weighs several questions goes in a decision
+file.
 
   task status:pending export | jq -c '.[] | {name: .description, text: .description}' |
     examples/decide.py "What should happen to this task?" -c goals.md -c notes.md \\
       -e "prioritize=do it this week, it moves a goal or meets a deadline" \\
       -e "defer=worth doing, not now" -e "drop=serves no goal"
-  examples/decide.py "Does this step move one of my goals forward?" \\
-    -n "Is this step blocked by something not done yet?" -c goals.md < steps.txt
+  examples/decide.py "Does this step move one of my goals forward?" -c goals.md < steps.txt
   examples/decide.py "Does this offer pay above market?" -c market.md -i offers/*.md
   examples/decide.py -d lunch
 
@@ -31,7 +29,7 @@ FILE... (each file one candidate, named by its file name); else lines on
 stdin, each a JSON object {"name", "text"} or plain text that is both; else
 the decision file's "candidates" command, which prints either. With none, as
 in classif, the context is the one text judged, so a single decision gets
-its answer and the context lines it rests on.
+its answer and the context lines it is most sensitive to.
 
 A decision file is NAME.json in $DECIDE_DIR (default ~/.config/decide), or a
 path to one:
@@ -42,16 +40,17 @@ path to one:
                  "when": "shell command; the criterion counts only if it succeeds"}],
    "verdict": {"question": "...", "options": ["name=description", ...],
                "context": "text", or "context_cmd": "shell command"}}
-QUESTION, -y and -n become criteria named q1, q2... in that order. -c,
-repeatable, gives every criterion without a context of its own a context: each
-a file or the text itself, joined in order. Keep it short, a hand-written list
+A decision file's criteria each name a question and the answer that counts
+for a candidate; the score is the product of the p of those answers. -c,
+repeatable, is the context of QUESTION and of every criterion without one of
+its own: each a file or the text itself, joined in order. Keep it short, a hand-written list
 of goals rather than a vault: it must fit the model's window beside each
 candidate, and over 60 lines it is not marked.
 
-The report names each question (q1, q2... for QUESTION, -y and -n) with the
-answer that counts for a candidate, then one row per candidate, best first:
-the score, and for each question the answer the model gave with its p.
-unknown means the text does not settle the question; it counts against.
+The report names each question (QUESTION is "answer") with the answer that
+counts for a candidate, then one row per candidate, best first: the score, and
+for each question the answer the model gave with its p. unknown means the text
+does not settle the question; it counts against.
 
 Marks: for the top N (-x, default 1, 0 for none) each non-blank line of the
 candidate's text, then of each criterion's context, is dropped in turn and the
@@ -60,8 +59,11 @@ criterion asked again. Up to three lines per criterion whose removal moves p by
 + for a line that raised p of the label it got. A one-line task's reasons sit
 in the goals it was judged against, so context lines are marked too. The marks
 come from the same one-call reading as the answer, so they cannot disagree
-with it the way classif --why's line-by-line reading can. That is one call per
-line, so a text of one line or over 60, and a context over 60, is not marked.
+with it the way classif --why's line-by-line reading can. A mark shows what p
+is sensitive to, not how the model reasoned: on boilerplate it can land on
+noise, such as "SOFTWARE." in a license, so check that a mark makes sense.
+That is one call per line, so a text of one line or over 60, and a context
+over 60, is not marked.
 
 Record: each run writes the criteria with their context, every candidate's
 text, every p and the marks to $XDG_STATE_HOME/decide/NAME/DATE.json (NAME is
@@ -92,11 +94,11 @@ EXAMPLES = """examples:
   task export | jq -r '.[].description' |
     decide.py "What should happen to this task?" -c goals.md \\
       -e "prioritize=do it this week" -e "defer=not now" -e "drop=serves no goal"
-  decide.py "Does this offer pay above market?" -n "Does it require relocating?" -i offers/*.md
+  decide.py "Does this offer pay above market?" -c market.md -i offers/*.md
 
 The candidates are the options to rank: arguments after the question, lines or
-JSON lines {"name", "text"} on stdin, or -i files. -y and -n take whole
-questions. decide never invents options; with none, the context is judged."""
+JSON lines {"name", "text"} on stdin, or -i files. decide never invents
+options; with none, the context is judged."""
 PROG = Path(sys.argv[0]).name
 CLASSIF = shutil.which("classif") or str(Path(__file__).resolve().parents[1] / "classif")
 
@@ -143,7 +145,7 @@ def context_of(spec, shared):
     return own.strip() or shared
 
 
-def criteria_of(decision, adhoc, verdict_q, options, context):
+def criteria_of(decision, question, options, context):
     out = []
     for c in decision.get("criteria", []):
         if not c.get("name") or not c.get("question") or c.get("want") not in ("yes", "no"):
@@ -152,11 +154,12 @@ def criteria_of(decision, adhoc, verdict_q, options, context):
             continue
         out.append({"kind": "label", "name": c["name"], "want": c["want"], "question": c["question"],
                     "context": context_of(c, context)})
-    for n, (want, question) in enumerate(adhoc, 1):
-        out.append({"kind": "label", "name": f"q{n}", "want": want, "question": question, "context": context})
+    if question and not options:
+        out.append({"kind": "label", "name": "answer", "want": "yes", "question": question, "context": context})
     v = decision.get("verdict") or {}
     if options or v.get("options"):
-        out.append({"kind": "enum", "name": "verdict", "question": verdict_q or v.get("question") or VERDICT_Q,
+        out.append({"kind": "enum", "name": "verdict", "question": (question if options else None)
+                    or v.get("question") or VERDICT_Q,
                     "options": options or v["options"], "context": context_of(v, context)})
     return out
 
@@ -364,10 +367,6 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], epilog=EXAMPLES.replace("decide.py", PROG),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-d", dest="decision", metavar="NAME", help="a decision file: NAME in $DECIDE_DIR, or a path")
-    ap.add_argument("-y", dest="adhoc", action="append", default=[], type=lambda q: ("yes", q),
-                    metavar="QUESTION", help="a criterion that wants yes")
-    ap.add_argument("-n", dest="adhoc", action="append", type=lambda q: ("no", q),
-                    metavar="QUESTION", help="a criterion that wants no")
     ap.add_argument("-e", dest="options", action="append", default=[], metavar="OPTION",
                     help="a verdict option, as classif -e: name or name=description; repeatable")
     ap.add_argument("-c", dest="context", action="append", default=[], metavar="CONTEXT",
@@ -384,11 +383,10 @@ def main(argv=None):
     a = ap.parse_intermixed_args(argv)
 
     decision = load_decision(a.decision) if a.decision else {"name": "adhoc"}
-    adhoc = a.adhoc if a.options or not a.question else [("yes", a.question)] + a.adhoc
     shared = read_context(a.context)
-    crits = criteria_of(decision, adhoc, a.question if a.options else None, a.options, shared)
+    crits = criteria_of(decision, a.question, a.options, shared)
     if not crits:
-        die("no question: give QUESTION, -y, -n or -e, or -d with a decision file")
+        die("no question: give QUESTION, or -d with a decision file")
     cands = candidates_of(a.texts, a.files, decision)
     if not cands and shared:
         # As in classif: with no input, the context is the text judged.

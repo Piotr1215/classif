@@ -91,12 +91,15 @@ class DecideTest(unittest.TestCase):
         Path(self.env["DECIDE_DIR"]).mkdir(exist_ok=True)
         (Path(self.env["DECIDE_DIR"]) / f"{name}.json").write_text(json.dumps(body))
 
-    def test_ranks_by_the_product_of_the_p_each_criterion_wants(self):
-        r = self.decide("Is it fun?", "-n", "Is it far?", stdin="fun near\nfun far\ndull near\n",
+    def test_a_decision_file_ranks_by_the_product_of_the_p_each_criterion_wants(self):
+        self.decision_file("outing", {"criteria": [
+            {"name": "fun", "want": "yes", "question": "Is it fun?"},
+            {"name": "far", "want": "no", "question": "Is it far?"}]})
+        r = self.decide("-d", "outing", stdin="fun near\nfun far\ndull near\n",
                         rules=[{"q": "fun", "has": "fun", "d": 0.4}, {"q": "far", "has": "far", "d": 0.3}])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("  q1  yes counts  Is it fun?", r.stdout)
-        self.assertIn("  q2  no counts   Is it far?", r.stdout)
+        self.assertIn("  fun  yes counts  Is it fun?", r.stdout)
+        self.assertIn("  far  no counts   Is it far?", r.stdout)
         # fun near 0.9 * p(no) 0.5, dull near 0.5 * 0.5, fun far 0.9 * p(no) 0.2;
         # each cell is the answer the model gave
         self.assertEqual(scores(r.stdout), [["0.450", "yes", "0.900", "yes", "0.500", "fun", "near"],
@@ -110,7 +113,7 @@ class DecideTest(unittest.TestCase):
                         rules=[{"q": "fun", "has": "fun", "d": 0.4}])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual([row[-1] for row in scores(r.stdout)], ["a.txt", "b.txt"])
-        self.assertIn("why a.txt: lines whose removal moves the answer most\n  q1\n    +0.400  fun thing\n", r.stdout)
+        self.assertIn("why a.txt: lines whose removal moves the answer most\n  answer\n    +0.400  fun thing\n", r.stdout)
         self.assertNotIn("boring line", r.stdout)
         self.assertNotIn("why b.txt", r.stdout)
 
@@ -130,11 +133,12 @@ class DecideTest(unittest.TestCase):
                       "    +0.150  context: Goal: race in April\n", r.stdout)
         self.assertNotIn("Note: tired", r.stdout.split("why")[1])
 
-    def test_the_question_comes_before_y_and_n_and_a_verdict_takes_it_instead(self):
-        r = self.decide("Is it fun?", "-y", "Is it near?", "-x", "0", stdin="fun\n")
-        self.assertIn("  q1  yes counts  Is it fun?\n  q2  yes counts  Is it near?\n", r.stdout)
-        r = self.decide("Keep it?", "-y", "Is it near?", "-e", "keep", "-e", "toss", "-x", "0", stdin="fun\n")
-        self.assertIn("  q1       yes counts  Is it near?\n  verdict  one of      Keep it? (keep, toss)\n", r.stdout)
+    def test_the_question_wants_yes_and_with_e_is_the_verdicts_question(self):
+        r = self.decide("Is it fun?", "-x", "0", stdin="fun\n")
+        self.assertIn("  answer  yes counts  Is it fun?\n\n", r.stdout)
+        r = self.decide("Keep it?", "-e", "keep", "-e", "toss", "-x", "0", stdin="fun\n")
+        self.assertIn("  verdict  one of      Keep it? (keep, toss)\n\n", r.stdout)
+        self.assertEqual(self.decide("-y", "Is it fun?", stdin="fun\n").returncode, 2)
 
     def test_candidates_can_be_arguments_after_the_question_among_options(self):
         r = self.decide("-c", "Goal: fun", "Is it fun?", "fun walk", "-x", "0", "dull chore",
@@ -148,7 +152,7 @@ class DecideTest(unittest.TestCase):
         r = self.decide("Is it fun?", "-c", "fun line\nplain line", rules=[{"q": "fun", "has": "fun", "d": 0.4}])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(scores(r.stdout), [["0.900", "yes", "0.900", "context"]])
-        self.assertIn("why context: lines whose removal moves the answer most\n  q1\n    +0.400  fun line\n", r.stdout)
+        self.assertIn("why context: lines whose removal moves the answer most\n  answer\n    +0.400  fun line\n", r.stdout)
         rec = self.record()
         self.assertEqual((rec["criteria"][0]["context"], rec["ranking"][0]["text"]), (None, "fun line\nplain line"))
 
@@ -156,11 +160,11 @@ class DecideTest(unittest.TestCase):
         stub = Path(self.env["PATH"].split(":")[0]) / "classif"
         stub.write_text("#!/bin/sh\ncat >/dev/null\n"
                         "echo '{\"label\": \"unknown\", \"p\": {\"yes\": 0.05, \"no\": 0.15, \"unknown\": 0.8}}'\nexit 1\n")
-        r = self.decide("-n", "Should I eat bread?", "-x", "0", stdin="a license\n")
-        self.assertEqual(scores(r.stdout), [["0.150", "unknown", "0.800", "a", "license"]])
+        r = self.decide("Should I eat bread?", "-x", "0", stdin="a license\n")
+        self.assertEqual(scores(r.stdout), [["0.050", "unknown", "0.800", "a", "license"]])
 
     def test_k_narrows_the_report_and_the_record_keeps_every_candidate(self):
-        r = self.decide("-y", "Is it fun?", "-k", "1", "-x", "0", stdin="fun\ndull\nflat\n",
+        r = self.decide("Is it fun?", "-k", "1", "-x", "0", stdin="fun\ndull\nflat\n",
                         rules=[{"q": "fun", "has": "fun", "d": 0.4}])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual([row[-1] for row in scores(r.stdout)], ["fun"])
@@ -193,26 +197,26 @@ class DecideTest(unittest.TestCase):
         self.assertEqual([row[-1] for row in scores(r.stdout)], ["piped"])
 
     def test_the_record_holds_criteria_context_every_p_and_marks(self):
-        r = self.decide("-y", "Is it fun?", "-c", "Rule: fun wins", "-j",
+        r = self.decide("Is it fun?", "-c", "Rule: fun wins", "-j",
                         stdin='{"name": "a", "text": "fun one\\nplain"}\n',
                         rules=[{"q": "fun", "has": "fun", "d": 0.4}])
         self.assertEqual(r.returncode, 0, r.stderr)
         printed = json.loads(r.stdout)
         self.assertEqual(printed, self.record())
-        self.assertEqual(printed["criteria"], [{"kind": "label", "name": "q1", "want": "yes",
+        self.assertEqual(printed["criteria"], [{"kind": "label", "name": "answer", "want": "yes",
                                                 "question": "Is it fun?", "context": "Rule: fun wins"}])
         (row,) = printed["ranking"]
-        self.assertEqual((row["name"], row["score"], row["p"], row["text"]), ("a", 0.9, {"q1": 0.9}, "fun one\nplain"))
-        self.assertEqual(row["marks"], {"q1": [{"from": "text", "line": "fun one", "delta": 0.4}]})
-        self.assertEqual(row["answers"], {"q1": {"label": "yes", "p": {"yes": 0.9, "no": 0.1, "unknown": 0.0}}})
+        self.assertEqual((row["name"], row["score"], row["p"], row["text"]), ("a", 0.9, {"answer": 0.9}, "fun one\nplain"))
+        self.assertEqual(row["marks"], {"answer": [{"from": "text", "line": "fun one", "delta": 0.4}]})
+        self.assertEqual(row["answers"], {"answer": {"label": "yes", "p": {"yes": 0.9, "no": 0.1, "unknown": 0.0}}})
         self.assertIn(f"decide: record in {Path(self.env['XDG_STATE_HOME'])}/decide/adhoc/", r.stderr)
 
     def test_an_unscored_candidate_is_left_out_and_nothing_scored_exits_1(self):
-        r = self.decide("-y", "Is it ok?", stdin="fine\nUNSCORED thing\n")
+        r = self.decide("Is it ok?", stdin="fine\nUNSCORED thing\n")
         self.assertEqual(r.returncode, 0)
         self.assertIn("decide: classif could not score UNSCORED thing", r.stderr)
         self.assertEqual([row[-1] for row in scores(r.stdout)], ["fine"])
-        r = self.decide("-y", "Is it ok?", stdin="UNSCORED\n")
+        r = self.decide("Is it ok?", stdin="UNSCORED\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("nothing could be scored", r.stderr)
 
@@ -220,12 +224,12 @@ class DecideTest(unittest.TestCase):
         r = self.decide(stdin="a\n")
         self.assertEqual(r.returncode, 2)
         self.assertIn("no question", r.stderr)
-        r = self.decide("-y", "Is it ok?", stdin="")
+        r = self.decide("Is it ok?", stdin="")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no candidates", r.stderr)
 
     def test_one_line_text_without_context_is_not_marked(self):
-        r = self.decide("-y", "Is it ok?", stdin="only line\n")
+        r = self.decide("Is it ok?", stdin="only line\n")
         self.assertIn("why only line: not marked, the text has 1 line and no context has 1 to 60", r.stdout)
 
 

@@ -242,15 +242,15 @@ why Sign up for a 10-week running plan: lines whose removal moves the answer mos
     -0.005  context: Constraint: two free evenings a week
 ```
 
-The question is asked as in classif. With `-e` it is the verdict's question, and the score is p of the first option, so the list is ordered by how surely each task should be prioritized. `-k 3` prints the top three; the rest stay in the record. Without `-e` the question is a yes/no criterion; `-y QUESTION` and `-n QUESTION` add more, and the score is the product of the p each one wants. Candidates can also follow the question as arguments, and `-i` takes files, one candidate each:
+The question is asked as in classif. With `-e` it is the verdict's question, and the score is p of the first option, so the list is ordered by how surely each task should be prioritized. `-k 3` prints the top three; the rest stay in the record. Without `-e` the score is p(yes). Candidates can also follow the question as arguments, and `-i` takes files, one candidate each:
 
 ```sh
 examples/decide.py "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
-examples/decide.py "Does this offer pay above market?" -n "Does it require relocating?" -c market.md -i offers/*.md
+examples/decide.py "Does this offer pay above market?" -c market.md -i offers/*.md
 ```
 
-The `why` block explains the top pick (`-x N` explains more). Each line of the candidate's text, then of the context, is left out in turn and the question asked again; the lines whose removal moves p most are printed. They come from the same one-call reading as the answer, so they cannot disagree with it, as a line-by-line `--why` reading can. Here the running plan rests on the half-marathon goal: without that line, p(prioritize) falls by 0.974.
+The `why` block explains the top pick (`-x N` explains more). Each line of the candidate's text, then of the context, is left out in turn and the question asked again; the lines whose removal moves p most are printed. They come from the same one-call reading as the answer, so they cannot disagree with it, as a line-by-line `--why` reading can. Here the running plan rests on the half-marathon goal: without that line, p(prioritize) falls by 0.974. A mark shows what p is sensitive to, not how the model reasoned; on boilerplate such as a license it can land on a line like `SOFTWARE.`, so check that a mark makes sense before trusting it.
 
-Every run writes the criteria with their context, each candidate's text, every p and the marks to `~/.local/state/decide/`, so a decision can be read back and rerun. A repeated decision goes in `~/.config/decide/NAME.json` with a command that lists its candidates and commands that fetch its context, and runs as `examples/decide.py -d NAME`; `python3 examples/decide.py --help` shows the format.
+Every run writes the criteria with their context, each candidate's text, every p and the marks to `~/.local/state/decide/`, so a decision can be read back and rerun. A repeated decision goes in `~/.config/decide/NAME.json` with a command that lists its candidates and commands that fetch its context, and runs as `examples/decide.py -d NAME`. A decision file can weigh several questions, each naming the answer that counts, and the score is the product of their p; `python3 examples/decide.py --help` shows the format.
 
 Keep the context short, a hand-written list of goals rather than a folder of notes: it must fit the model's window beside each candidate, and a context over 60 lines is not marked. The cost grows with the list: candidates times questions, plus one call per line for each explained pick. Each candidate is judged alone, so two tasks at 0.97 and 0.96 are a tie, not an order. A verdict's options still go to one `--enum` call, so it takes nine at most.
