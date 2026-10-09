@@ -116,6 +116,13 @@ notmuch show --format=raw id:x |
   ./classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'
 ```
 
+`classif rank` asks one question of each candidate, any number of them, and prints them best first; see [one question, many candidates](docs/reference.md#one-question-many-candidates).
+
+```sh
+task export | jq -r '.[].description' |
+  ./classif rank "What should happen to this task?" -c goals.md -e prioritize,defer,drop
+```
+
 See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and ranking lists longer than nine options. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
 
 ## Architecture

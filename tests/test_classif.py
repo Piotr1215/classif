@@ -111,7 +111,7 @@ class SpecDirTests(Base):
         r = subprocess.run([str(ROOT / "classif"), "-h"], capture_output=True, text=True,
                            env=dict(os.environ), timeout=10)
         listed = [l.split()[0] for l in r.stdout.split("Commands:")[1].splitlines() if l.startswith("  ")]
-        self.assertEqual(listed, ["tag", "specs", "histogram", "unload"])
+        self.assertEqual(listed, ["tag", "rank", "specs", "histogram", "unload"])
         self.assertIn("For hooks and spec authoring: classify, smoke", r.stdout)
         self.assertTrue(r.stdout.rstrip().endswith("Full documentation <https://github.com/Piotr1215/classif>"))
 

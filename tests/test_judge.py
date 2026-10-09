@@ -46,7 +46,8 @@ def chat(top, done=True):
 
 
 class FakeOllama:
-    """Serves one canned (status, body) and records each request body."""
+    """Serves one canned (status, body), or what a function of the request
+    returns, and records each request body."""
 
     def __init__(self, reply):
         self.reply, self.requests = reply, []
@@ -55,7 +56,7 @@ class FakeOllama:
         class H(BaseHTTPRequestHandler):
             def do_POST(self):
                 fake.requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-                status, body = fake.reply
+                status, body = fake.reply(fake.requests[-1]) if callable(fake.reply) else fake.reply
                 data = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(data)))

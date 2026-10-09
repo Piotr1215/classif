@@ -606,6 +606,22 @@ def enum_options(values):
     return [o for o in out if o.strip()]
 
 
+def enum_labels(ap, values):
+    """-e's options as (labels, names, options): the digits the model answers
+    with, the names the output carries and the text the model reads, each
+    ending in none."""
+    opts = [o.partition("=") for o in enum_options(values)]
+    names = [n.strip() for n, _, _ in opts]
+    # One name is enough: none is its alternative, so -e hook is a filter.
+    if not 1 <= len(names) <= 9 or not all(names) or len({n.lower() for n in names}) != len(names):
+        ap.error(f"-e needs 1 to 9 distinct options, got {len(names)}")
+    # Digits are one token each, so any name scores; 10 and up may not be.
+    labels = [str(i) for i in range(1, len(names) + 1)] + ["0"]
+    # The model reads each description; the output carries only the name.
+    options = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
+    return labels, names + ["none"], options + ["none of these"]
+
+
 def piped():
     """Whether stdin is a pipe, file or socket, empty or not. A script's
     empty pipe (git diff with no changes) is an empty input, never a reason
@@ -747,6 +763,167 @@ def tag_main(argv, prog="classif tag"):
     return code
 
 
+RANK_EPILOG = """\
+Output: one row per candidate, best first: the score, the answer with its p, the candidate; -j for JSON. Exit: 0 when something ranked, 2 when nothing could be scored. A candidate classif cannot score is left out with a note on stderr.
+
+    classif rank "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
+    task export | jq -r '.[].description' | classif rank "What should happen to this task?" -c goals.md \\
+        -e "prioritize=do it this week" -e "defer=worth doing, not now" -e "drop=serves no goal"
+    classif rank "Does this offer pay above market?" -c market.md -i offers/*.md"""
+MARK_LINES = 60     # one call per line, so longer texts and contexts are not marked
+MARK_MIN = 0.005    # a smaller move is noise: identical runs differ by about 0.001
+MARKS = 3
+
+
+def candidates(ap, texts, files):
+    """The candidates as [{name, text}]: each argument, then each -i file named
+    by its file name; else each stdin line, plain text or JSON {"name", "text"}."""
+    out = [{"name": t, "text": t} for t in texts]
+    for path in files or []:
+        try:
+            with open(path, "rb") as fh:
+                out.append({"name": os.path.basename(path), "text": fh.read().decode("utf-8", errors="replace")})
+        except OSError as e:
+            ap.error(f"-i {path}: {e.strerror}")
+    if out or not piped():
+        return out
+    for line in sys.stdin.buffer.read().decode("utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("text"), str):
+            out.append({"name": str(obj.get("name") or obj["text"]), "text": obj["text"]})
+        elif line.strip():
+            out.append({"name": line.strip(), "text": line.strip()})
+    return out
+
+
+def without_each_line(text, context):
+    """(source, line, text, context) with one non-blank line left out: of the
+    text when it has 2 to MARK_LINES, then of the context when it has 1 to
+    MARK_LINES; None when neither may be marked."""
+    lines, ctx = text.split("\n"), (context or "").split("\n")
+    n, m = sum(1 for l in lines if l.strip()), sum(1 for l in ctx if l.strip())
+    if not 1 < n <= MARK_LINES and not 0 < m <= MARK_LINES:
+        return None
+    out = []
+    if 1 < n <= MARK_LINES:
+        out += [("text", l, "\n".join(lines[:i] + lines[i + 1:]), context) for i, l in enumerate(lines) if l.strip()]
+    if 0 < m <= MARK_LINES:
+        out += [("context", l, text, "\n".join(ctx[:i] + ctx[i + 1:]).strip() or None)
+                for i, l in enumerate(ctx) if l.strip()]
+    return out
+
+
+def short(s, n=60):
+    s = " ".join(s.split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def rank_main(argv, prog="classif rank"):
+    """classif rank: one question asked of each candidate, best first."""
+    global PROG
+    PROG = prog
+    ap = argparse.ArgumentParser(
+        prog=prog, formatter_class=Help, epilog=RANK_EPILOG,
+        usage="%(prog)s [options] QUESTION CANDIDATE ...\n       cmd | %(prog)s [options] QUESTION\n"
+              "       %(prog)s [options] QUESTION -i FILE ...",
+        description="Ask one question of each candidate and rank them, best first: by p(yes), or with -e by p of "
+                    "the first option. Each candidate is its own call, so any number rank; a model answers one "
+                    "question about one text well and picks among many poorly.")
+    ap.add_argument("question", metavar="QUESTION", help="a yes/no question, or with -e the question the options answer")
+    ap.add_argument("texts", nargs="*", metavar="CANDIDATE", help="a candidate as text, one per argument")
+    ap.add_argument("-e", "--enum", action="append", metavar="OPTION",
+                    help="an answer to pick, as in classif -e: name or name=description, 1 to 9 plus none. The "
+                         "first option is the one candidates rank by")
+    ap.add_argument("-c", "--context", metavar="TEXT",
+                    help="background read before every candidate, such as goals: a file, <(cmd) or the text itself. "
+                         "With no candidates, it is the one judged")
+    ap.add_argument("-i", "--input", dest="files", action="extend", nargs="+", metavar="FILE",
+                    help="candidates, one per file, each named by its file name")
+    ap.add_argument("-k", "--top", type=int, metavar="N", help="show only the top N")
+    ap.add_argument("-w", "--why", action="store_true",
+                    help="for the top pick, the lines of its text and of -c whose removal moves its score most. One "
+                         "call per line, so a text or context over 60 lines is not marked")
+    ap.add_argument("-j", "--json", action="store_true", help="print the ranking as JSON")
+    a = ap.parse_intermixed_args(join_descriptions(argv))
+    if a.top is not None and a.top < 1:
+        ap.error(f"-k wants 1 or more, got {a.top}")
+    labels, names, options = enum_labels(ap, a.enum) if a.enum else (DEFAULT_LABELS.split(","), None, None)
+    show = dict(zip(labels, names or labels))
+    context = read_context(ap, a.context)
+    cands = candidates(ap, a.texts, a.files)
+    if not cands and context and not piped():
+        # As in classif: given no input, -c is what the question is asked of.
+        name = os.path.basename(a.context) if os.path.isfile(a.context) else "context"
+        cands, context = [{"name": name, "text": context}], None
+    if not cands:
+        ap.error("no candidates: pass them after the question, one per line on stdin, or -i FILE ...")
+
+    host, model = route()
+    if not host:
+        return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
+
+    def ask(text, ctx):
+        wait = None if "CLASSIF_TIMEOUT" in os.environ else 15 + (len(text) + len(ctx or "")) / READ_RATE
+        return judge(a.question, text, labels, options, model=model, host=host, timeout=wait, context=ctx)
+
+    ranked, missed = [], []
+    for c in cands:
+        r = ask(c["text"], context)
+        if r["label"] is None:
+            why = r["unscored"] + (". rank reads each candidate in one call, so it must fit the window"
+                                   if r.get("overflow") else "")
+            missed.append({"name": c["name"], "unscored": why})
+            print(f"{PROG}: {short(c['name'])}: unscored: {why}", file=sys.stderr)
+            continue
+        ranked.append({"name": c["name"], "score": r["p"][labels[0]], "label": show[r["label"]],
+                       "p": {show[l]: v for l, v in r["p"].items()}, "text": c["text"]})
+    if not ranked:
+        return 2
+    # Stable: a tie keeps the order the candidates came in.
+    ranked.sort(key=lambda row: -row["score"])
+    top = ranked[0]
+    if a.why:
+        cut = without_each_line(top["text"], context)
+        if cut is None:
+            top["unmarked"] = f"its text has under 2 or over {MARK_LINES} lines and there is no -c of 1 to {MARK_LINES}"
+        else:
+            top["marks"] = []
+            for source, line, text, ctx in cut:
+                r = ask(text, ctx)
+                if r["label"] is not None and abs(top["score"] - r["p"][labels[0]]) >= MARK_MIN:
+                    top["marks"].append({"from": source, "line": line,
+                                         "delta": round(top["score"] - r["p"][labels[0]], 4)})
+            top["marks"] = sorted(top["marks"], key=lambda m: -abs(m["delta"]))[:MARKS]
+    shown = ranked[:a.top] if a.top else ranked
+    first = show[labels[0]]
+
+    if a.json:
+        rows = [{"name": row["name"], "score": round(row["score"], 4), "label": row["label"],
+                 "p": {l: round(v, 4) for l, v in row["p"].items()},
+                 **{k: row[k] for k in ("marks", "unmarked") if k in row}} for row in shown]
+        dump({"question": a.question, **({"options": names[:-1]} if names else {}),
+              **({"context": a.context} if context else {}), "ranking": rows,
+              **({"unscored": missed} if missed else {}), "model": model, "host": host})
+        return 0
+    table = [[f"p({first})", "answer", "candidate"]] + [
+        [f"{row['score']:.3f}", f"{row['label']} {row['p'][row['label']]:.3f}", short(row["name"])] for row in shown]
+    widths = [max(len(row[i]) for row in table) for i in range(2)]
+    for row in table:
+        print(f"{row[0]:<{widths[0]}}  {row[1]:<{widths[1]}}  {row[2]}")
+    if "unmarked" in top:
+        print(f"\nwhy {short(top['name'])}: not marked, {top['unmarked']}")
+    elif "marks" in top:
+        print(f"\nwhy {short(top['name'])}: the lines whose removal moves p({first}) most")
+        for m in top["marks"]:
+            print(f"  {m['delta']:+.3f}  {'context: ' if m['from'] == 'context' else ''}{short(m['line'], 100)}")
+        if not top["marks"]:
+            print("  (no single line moves it)")
+    return 0
+
+
 def main(argv=None, prog="classif"):
     global PROG
     PROG = prog
@@ -815,17 +992,7 @@ def main(argv=None, prog="classif"):
 
     names = options = None
     if a.enum is not None:
-        opts = [o.partition("=") for o in enum_options(a.enum)]
-        names = [n.strip() for n, _, _ in opts]
-        # One name is enough: none is its alternative, so -e hook is a filter.
-        if not 1 <= len(names) <= 9 or not all(names) or len({n.lower() for n in names}) != len(names):
-            ap.error(f"-e needs 1 to 9 distinct options, got {len(names)}")
-        # Digits are one token each, so any name scores; 10 and up may not be.
-        labels = [str(i) for i in range(1, len(names) + 1)] + ["0"]
-        # The model reads each description; the output carries only the name.
-        options = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
-        options.append("none of these")
-        names.append("none")
+        labels, names, options = enum_labels(ap, a.enum)
     else:
         labels = [l.strip() for l in a.labels.split(",") if l.strip()]
         if len(labels) < 2 or len({l.lower() for l in labels}) != len(labels):
