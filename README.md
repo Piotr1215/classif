@@ -116,7 +116,7 @@ notmuch show --format=raw id:x |
   ./classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'
 ```
 
-See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies and named decision specs. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
+See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and ranking lists longer than nine options. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
 
 ## Architecture
 

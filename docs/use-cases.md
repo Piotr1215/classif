@@ -207,3 +207,50 @@ export CLASSIF_DIR=/tmp/classif-specs
 The field numbers are character limits. This example uses only the first 3000 characters of the ticket body. Spec calls are bounded direct reads, so they do not inherit automatic whole-document scanning. For a large source, use the ordinary question form with `--input` instead. Expand the smoke set with representative cases before treating a passing check as evidence of production quality. Keep the spec in version control alongside the consuming application.
 
 To keep your own specs without `CLASSIF_DIR`, put them in `~/.config/classif/specs`, and run `unset CLASSIF_DIR` after this example. `classif specs` lists every spec it finds, the fields each wants and its file. Run `./classif --help` for the available commands.
+
+## Rank many candidates
+
+`--enum` picks one of one to nine options in a single call. A to-do list, a set of offers or every repository you touched this month is longer than that, and you want them ordered, not one picked. [`examples/decide.py`](../examples/decide.py) asks each candidate its own questions, one classif call per candidate per question, so the list can be any length. Each call stays inside what a small model does well: one yes/no question about one short text, or a few described options.
+
+Write the goals the tasks are judged against, then let each task take a verdict:
+
+```sh
+cat > goals.md <<'GOALS'
+Goal: run a half marathon in April
+Goal: ship the Rust side project to its first users by summer
+Constraint: two free evenings a week
+GOALS
+printf '%s\n' "Sign up for a 10-week running plan" "Rewrite the side project's CLI in Go" \
+  "Write the landing page for the side project" "Reorganize the bookshelf" |
+  examples/decide.py "What should happen to this task?" -c goals.md -k 3 \
+    -e "prioritize=do it this week, it moves a goal forward" \
+    -e "defer=worth doing, not now" -e "drop=serves no goal"
+```
+
+```text
+  verdict  one of    What should happen to this task? (prioritize, defer, drop)
+
+score  verdict           candidate
+0.979  prioritize 0.979  Sign up for a 10-week running plan
+0.873  prioritize 0.873  Write the landing page for the side project
+0.028  drop 0.914        Rewrite the side project's CLI in Go
+
+why Sign up for a 10-week running plan: lines whose removal moves the answer most
+  verdict (prioritize)
+    +0.974  context: Goal: run a half marathon in April
+    -0.005  context: Goal: ship the Rust side project to its first users by summer
+    -0.005  context: Constraint: two free evenings a week
+```
+
+The question is asked as in classif. With `-e` it is the verdict's question, and the score is p of the first option, so the list is ordered by how surely each task should be prioritized. `-k 3` prints the top three; the rest stay in the record. Without `-e` the question is a yes/no criterion; `-y QUESTION` and `-n QUESTION` add more, and the score is the product of the p each one wants. Candidates can also follow the question as arguments, and `-i` takes files, one candidate each:
+
+```sh
+examples/decide.py "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
+examples/decide.py "Does this offer pay above market?" -n "Does it require relocating?" -c market.md -i offers/*.md
+```
+
+The `why` block explains the top pick (`-x N` explains more). Each line of the candidate's text, then of the context, is left out in turn and the question asked again; the lines whose removal moves p most are printed. They come from the same one-call reading as the answer, so they cannot disagree with it, as a line-by-line `--why` reading can. Here the running plan rests on the half-marathon goal: without that line, p(prioritize) falls by 0.974.
+
+Every run writes the criteria with their context, each candidate's text, every p and the marks to `~/.local/state/decide/`, so a decision can be read back and rerun. A repeated decision goes in `~/.config/decide/NAME.json` with a command that lists its candidates and commands that fetch its context, and runs as `examples/decide.py -d NAME`; `python3 examples/decide.py --help` shows the format.
+
+Keep the context short, a hand-written list of goals rather than a folder of notes: it must fit the model's window beside each candidate, and a context over 60 lines is not marked. The cost grows with the list: candidates times questions, plus one call per line for each explained pick. Each candidate is judged alone, so two tasks at 0.97 and 0.96 are a tie, not an order. A verdict's options still go to one `--enum` call, so it takes nine at most.
