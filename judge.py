@@ -31,9 +31,11 @@ other label (no or unknown), 2 when unscored (no host, low mass, bad response),
 With -t P (--min-p), a winner whose p is below P is unsure: exit 3 whichever
 label leads, ` unsure` after the verdict, and a gate that passes nothing.
 
--e takes options by name and numbers them 1 to 9 behind the scenes: the
-model answers a digit, classif prints the name, so any name scores, even one
-the model would start with a one-character piece (Baggins starts "B").
+-e takes options by name and numbers them behind the scenes: the model
+answers a digit, classif prints the name, so any name scores, even one the
+model would start with a one-character piece (Baggins starts "B"). Past nine
+options, each is first asked alone and the three likeliest are numbered for
+one pick, so a list of any length works.
 Option 0, "none of these", is always added and prints `none`, so a list
 without the answer is not forced onto its nearest name, the enum form of
 unknown. Repeat -e for each option, or list names with commas or newlines,
@@ -848,8 +850,8 @@ def rank_main(argv, prog="classif rank"):
     ap.add_argument("question", metavar="QUESTION", help="a yes/no question, or with -e the question the options answer")
     ap.add_argument("texts", nargs="*", metavar="CANDIDATE", help="a candidate as text, one per argument")
     ap.add_argument("-e", "--enum", action="append", metavar="OPTION",
-                    help="an answer to pick, as in classif -e: name or name=description, 1 to 9 plus none. The "
-                         "first option is the one candidates rank by")
+                    help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
+                         "option is the one candidates rank by")
     ap.add_argument("-c", "--context", metavar="TEXT",
                     help="background read before every candidate, such as goals: a file, <(cmd) or the text itself. "
                          "With no candidates, it is the one judged")
@@ -863,8 +865,8 @@ def rank_main(argv, prog="classif rank"):
     a = ap.parse_intermixed_args(join_descriptions(argv))
     if a.top is not None and a.top < 1:
         ap.error(f"-k wants 1 or more, got {a.top}")
-    labels, names, options = enum_labels(ap, a.enum) if a.enum else (DEFAULT_LABELS.split(","), None, None)
-    show = dict(zip(labels, names or labels))
+    labels, names, options = enum_labels(ap, a.enum, most=None) if a.enum else (DEFAULT_LABELS.split(","), None, None)
+    first = (names or labels)[0]
     context = read_context(ap, a.context)
     cands = candidates(ap, a.texts, a.files)
     if not cands and context and not piped():
@@ -879,8 +881,22 @@ def rank_main(argv, prog="classif rank"):
         return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
 
     def ask(text, ctx):
+        """{label, p, score} keyed by option names, or judge()'s failed result.
+        The score is p of the first option; past nine options, which screen()
+        narrows to finalists, it is the first option's p(yes) from its own call."""
         wait = None if "CLASSIF_TIMEOUT" in os.environ else 15 + (len(text) + len(ctx or "")) / READ_RATE
-        return judge(a.question, text, labels, options, model=model, host=host, timeout=wait, context=ctx)
+        yes, ls, ns, os_ = None, labels, names, options
+        if labels is None:
+            r, yes, ns, os_ = screen(a.question, text, names, options, model, host, lambda: wait, ctx)
+            if r is not None:
+                return r
+            ls = [str(i) for i in range(1, len(ns))] + ["0"]
+        r = judge(a.question, text, ls, os_, model=model, host=host, timeout=wait, context=ctx)
+        if r["label"] is None:
+            return r
+        show = dict(zip(ls, ns or ls))
+        p = {show[l]: v for l, v in r["p"].items()}
+        return {"label": show[r["label"]], "p": p, "score": yes[first] if yes else p[first]}
 
     ranked, missed = [], []
     for c in cands:
@@ -891,8 +907,7 @@ def rank_main(argv, prog="classif rank"):
             missed.append({"name": c["name"], "unscored": why})
             print(f"{PROG}: {short(c['name'])}: unscored: {why}", file=sys.stderr)
             continue
-        ranked.append({"name": c["name"], "score": r["p"][labels[0]], "label": show[r["label"]],
-                       "p": {show[l]: v for l, v in r["p"].items()}, "text": c["text"]})
+        ranked.append({"name": c["name"], "score": r["score"], "label": r["label"], "p": r["p"], "text": c["text"]})
     if not ranked:
         return 2
     # Stable: a tie keeps the order the candidates came in.
@@ -906,12 +921,10 @@ def rank_main(argv, prog="classif rank"):
             top["marks"] = []
             for source, line, text, ctx in cut:
                 r = ask(text, ctx)
-                if r["label"] is not None and abs(top["score"] - r["p"][labels[0]]) >= MARK_MIN:
-                    top["marks"].append({"from": source, "line": line,
-                                         "delta": round(top["score"] - r["p"][labels[0]], 4)})
+                if r["label"] is not None and abs(top["score"] - r["score"]) >= MARK_MIN:
+                    top["marks"].append({"from": source, "line": line, "delta": round(top["score"] - r["score"], 4)})
             top["marks"] = sorted(top["marks"], key=lambda m: -abs(m["delta"]))[:MARKS]
     shown = ranked[:a.top] if a.top else ranked
-    first = show[labels[0]]
 
     if a.json:
         rows = [{"name": row["name"], "score": round(row["score"], 4), "label": row["label"],

@@ -70,7 +70,7 @@ p(yes)  answer     candidate
 0.003   no 0.986   renew the passport
 ```
 
-- The score is p(yes), or with `-e` p of the first option; the answer column shows what each candidate got. `-e` takes 1 to 9 options plus `none`, as for a question.
+- The score is p(yes), or with `-e` p of the first option; the answer column shows what each candidate got. `-e` takes any number of options plus `none`, as for a question; past nine, each candidate's options are screened, and its score is the first option's p(yes) from its own call.
 - `-c` is read before every candidate. With no candidates and no pipe, `-c` is the one candidate, as for a question.
 - `-k N` prints the top N. `-j` prints `{question, options, context, ranking, unscored, model, host}`, each ranking row with `name`, `score`, `label`, `p` and, under `-w`, `marks`.
 - `-w` marks the top pick: each non-blank line of its text (2 to 60 lines), then of `-c` (1 to 60 lines), is left out and the question asked again. Up to three lines whose removal moves the score by 0.005 or more are printed, `+` for a line that raised it. A mark is sensitivity from the same one-call reading as the answer, not the line-by-line read of `--why` on a question.
@@ -102,7 +102,7 @@ The public command uses 3000-character passages and one reader call at a time. A
 
 The executor verdicts are supported, contradicted, unscored and insufficient. The public command maps supported to `yes` (exit 0) and contradicted to `no` (1); unscored exits 2 and insufficient exits 3 with a null label. JSON includes `read.doc_key`, `read.file`, `read.unit` and `read.sources`. For unit `char`, each source range is a half-open slice of the decoded input: `text[start:end]`. It also records operational coverage, passage dismissals and judged spans. Coverage does not certify the reader's semantic recall.
 
-For enums, `-e` takes one to nine options, including `name=description`. Every passage is checked; passages answering `none` are dismissed. The final judge reads the flagged passages. An over-budget set returns insufficient. Enum exits are 0 for the first option, 1 for other options or `none`, 2 for unscored and 3 for insufficient.
+For enums past the window, `-e` takes one to nine options, including `name=description`; a text that fits takes any number. Every passage is checked; passages answering `none` are dismissed. The final judge reads the flagged passages. An over-budget set returns insufficient. Enum exits are 0 for the first option, 1 for other options or `none`, 2 for unscored and 3 for insufficient.
 
 Nothing is written to disk without `--cache`. With it, saved reader scores live in `$XDG_CACHE_HOME/classif/mem.sqlite`, or `~/.cache/classif/mem.sqlite`. Keys include the exact prompt, labels, model tag and digest, context size and the `-c` text; a link's key leaves the `-c` text out. Raw log masses are recalibrated at lookup. A model without an identified digest is not cached. Saved readings do not cache the final verdict.
 

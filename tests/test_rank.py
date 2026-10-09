@@ -152,11 +152,24 @@ class RankTests(unittest.TestCase):
         self.assertEqual(out["ranking"][0]["marks"], [{"from": "text", "line": "alpha", "delta": 0.4}])
         self.assertEqual([m["name"] for m in out["unscored"]], ["UNSCORED"])
 
-    def test_ten_options_are_refused(self):
-        fake = self.serve()
-        r = run(fake.host, "rank", "Which?", "x", "-e", "a,b,c,d,e,f,g,h,i,j")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("-e needs 1 to 9 distinct options", r.stderr)
+    def test_past_nine_options_each_candidate_is_screened_and_ranks_by_its_first_options_p_yes(self):
+        def answer(req):
+            user = req["messages"][-1]["content"]
+            if "Options:" in user:
+                return chat([("1", math.log(0.9)), ("2", math.log(0.1))])
+            asked = re.search(r"Is the answer (\w+)\?", user)[1]
+            y = {"o1": 0.8 if "running" in user else 0.3, "o2": 0.6}.get(asked, 0.01)
+            return chat([("yes", math.log(y)), ("no", math.log(1 - y))])
+        fake = FakeOllama(answer)
+        self.addCleanup(fake.close)
+        opts = ",".join(f"o{i}" for i in range(1, 13))
+        r = run(fake.host, "rank", "Which?", "sort books", "go running", "-e", opts)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "p(o1)  answer    candidate\n"
+                                   "0.800  o1 0.900  go running\n"
+                                   "0.300  o1 0.900  sort books\n")
+        # Per candidate, twelve screens and one pick.
+        self.assertEqual(len(fake.requests), 2 * (12 + 1))
 
     def test_a_question_is_required(self):
         r = run("127.0.0.1:1", "rank", stdin=subprocess.DEVNULL)

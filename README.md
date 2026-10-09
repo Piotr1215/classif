@@ -90,7 +90,7 @@ printf '%s\n' 'Fix a startup crash.' |
     -e "chore=maintenance with no behavior change"
 ```
 
-`-e` accepts one to nine options and adds `none` when no option fits. Quote descriptions in scripts. Repeated `-i` files, or `-i a,b`, join several sources as one input. A positional input is literal text even when it looks like a filename.
+`-e` accepts any number of options and adds `none` when no option fits; past nine, classif asks about each option alone and picks among the three likeliest. Quote descriptions in scripts. Repeated `-i` files, or `-i a,b`, join several sources as one input. A positional input is literal text even when it looks like a filename.
 
 `-c` supplies the rule to every reader and judge call. A rule embedded in a large input may be absent from later passages. Context must fit the model window alongside the input or one passage. Put large sources in `-i`. Reference-link calls are independent of the policy.
 
@@ -123,7 +123,7 @@ task export | jq -r '.[].description' |
   ./classif rank "What should happen to this task?" -c goals.md -e prioritize,defer,drop
 ```
 
-See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and ranking lists longer than nine options. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
+See [shell use cases](docs/use-cases.md) for routing, filters, game-loop actions, feedback policies, named decision specs and ranking long lists. [The reference](docs/reference.md) covers the full CLI, host configuration, scores and calibration. [Claude Code integration](docs/claude-code.md) shows a coding agent asking classif about text too large for its context.
 
 ## Architecture
 

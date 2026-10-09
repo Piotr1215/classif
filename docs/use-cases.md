@@ -210,7 +210,7 @@ To keep your own specs without `CLASSIF_DIR`, put them in `~/.config/classif/spe
 
 ## Rank many candidates
 
-`--enum` picks one of one to nine options in a single call. A to-do list, a set of offers or every repository you touched this month is longer than that, and you want them ordered, not one picked. `classif rank` asks each candidate the question as its own call, so the list can be any length. Each call stays inside what a small model does well: one yes/no question about one short text, or a few described options.
+`--enum` picks one answer, from a list of any length. A to-do list, a set of offers or every repository you touched this month is often wanted ordered, not one picked. `classif rank` asks each candidate the question as its own call, so the list can be any length. Each call stays inside what a small model does well: one yes/no question about one short text, or a few described options.
 
 Write the goals the tasks are judged against, then let each task take a verdict:
 
