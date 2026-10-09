@@ -87,7 +87,7 @@ classif "Which command does this describe?" "stop process 1234" -e ls,cd,grep,fi
 kill 0.98
 ```
 
-`p` is the final pick's, over the finalists and `none`, so it does not say how the other options fared; `-j` carries each option's p(yes) as `screen`. The exit code is 0 only when the first option given wins. A text past the window and `--why` read in pieces that pick among at most nine options, so past nine both are refused. No eval set covers more than nine options yet: a live check put six of six short command descriptions on the right one of twelve commands.
+`p` is the final pick's, over the finalists and `none`, so it does not say how the other options fared; `-j` carries each option's p(yes) as `screen`. The exit code is 0 only when the first option given wins. A text past the window and `--why` read in pieces that pick among at most nine options, so past nine both are refused. An option missing from the three finalists cannot win, and the final p still reads high, so a `-t` floor past nine checks only the pick among finalists. No eval set covers more than nine options yet: live checks put six of six short command descriptions on the right one of twelve commands, and seven of eight on the right one of twenty. Options that overlap, such as `billing` and `invoice`, are untested.
 
 ## Long-input claims
 
