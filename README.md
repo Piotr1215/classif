@@ -109,6 +109,18 @@ Plain output is `LABEL P`. `-j` returns JSON with scores, model and execution me
 
 `-w`, or `--why`, prints the lines the answer rests on: the lines that fit or break a claim, or with `-e` a run of each voting passage that gives the chosen option alone. It is slower and can differ from a single whole-input decision. Memory-mode JSON includes evidence, source offsets and the answer's basis for applications to show before acting.
 
+## Commands
+
+Pick the command by how many questions you ask and how many texts they are about.
+
+| Command | Questions | Texts | Answer | Example |
+| --- | --- | --- | --- | --- |
+| `classif` | 1 | 1 | one verdict | `ls \| classif "Is there a license file?"` |
+| `classif tag` | many | 1 | one verdict per question | `ls \| classif tag 'license=present,absent' 'tests=present,absent'` |
+| `classif rank` | 1 | many | the texts, sorted | `ls -l \| classif rank "Is this a folder?"` |
+
+`tag` reads all of its input as one text. `rank` reads each input line as its own text, or each argument, or each `-i` file.
+
 `classif tag` asks several questions about one text and reads the text once, printing one `NAME ANSWER P` line per question; see [several questions, one text](docs/reference.md#several-questions-one-text).
 
 ```sh
