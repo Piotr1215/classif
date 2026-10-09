@@ -12,6 +12,7 @@ import sys
 import tempfile
 import os
 import pty
+import re
 import shutil
 import threading
 import time
@@ -523,10 +524,53 @@ class CliTests(unittest.TestCase):
                       fake.requests[0]["messages"][1]["content"])
 
     def test_options_from_every_e_count_together(self):
-        for args in (("-e", "a=x", "-e", "A=y"), ("-e", "o1,o2,o3,o4,o5", "-e", "o6,o7,o8,o9,o10")):
-            r = run(DEAD, *args, "q?", "x")
-            self.assertEqual(r.returncode, 2, args)
-            self.assertIn("-e needs 1 to 9 distinct options", r.stderr, args)
+        r = run(DEAD, "-e", "a=x", "-e", "A=y", "q?", "x")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("-e needs distinct named options, got a, A", r.stderr)
+        fake = self.serve(chat([("no", -0.05), ("yes", -3.0)]))
+        run(fake.host, "-e", "o1,o2,o3,o4,o5", "-e", "o6,o7,o8,o9,o10", "q?", "x")
+        self.assertEqual(len(fake.requests), 10 + 1)
+
+    def test_past_nine_options_each_is_asked_alone_and_the_three_likeliest_picked_among(self):
+        def model(req):
+            user = req["messages"][-1]["content"]
+            if "Options:" in user:
+                return chat([("2", -0.05), ("1", -3.0)])
+            # o3, o7 and o11 are likelier than the rest, o7 most.
+            y = {"o7": -0.1, "o3": -1.0, "o11": -1.5}.get(re.search(r"Is the answer (\w+)\?", user)[1], -4.0)
+            return chat([("yes", y), ("no", math.log(1 - math.exp(y)))])
+        fake = self.serve(model)
+        opts = ",".join(f"o{i}" for i in range(1, 13))
+        r = run(fake.host, "-j", "Which one?", "text", "-e", opts)
+        self.assertEqual(r.returncode, 1)
+        out = json.loads(r.stdout)
+        self.assertEqual((out["label"], set(out["p"])), ("o7", {"o3", "o7", "o11", "none"}))
+        self.assertEqual(set(out["screen"]), {f"o{i}" for i in range(1, 13)})
+        self.assertEqual(out["screen"]["o7"], round(math.exp(-0.1), 3))
+        self.assertIn("Which one? Is the answer o5? Answer yes, no or unknown.",
+                      fake.requests[4]["messages"][-1]["content"])
+        self.assertIn("Options: 1=o3, 2=o7, 3=o11, 0=none of these.", fake.requests[-1]["messages"][-1]["content"])
+        self.assertEqual(len(fake.requests), 12 + 1)
+
+    def test_past_nine_only_the_first_option_given_exits_0_not_the_first_finalist(self):
+        def model(likely):
+            def answer(req):
+                user = req["messages"][-1]["content"]
+                if "Options:" in user:
+                    return chat([("1", -0.05), ("2", -3.0)])
+                y = -0.1 if re.search(r"Is the answer (\w+)\?", user)[1] in likely else -4.0
+                return chat([("yes", y), ("no", math.log(1 - math.exp(y)))])
+            return answer
+        opts = ",".join(f"o{i}" for i in range(1, 11))
+        for likely, code in ((("o1", "o2", "o3"), 0), (("o5", "o6", "o7"), 1)):
+            fake = self.serve(model(likely))
+            r = run(fake.host, "Which one?", "text", "-e", opts)
+            self.assertEqual((r.returncode, r.stdout.split()[0]), (code, likely[0]))
+
+    def test_why_past_nine_options_is_refused(self):
+        r = run(DEAD, "-w", "q?", "x", "-e", ",".join(f"o{i}" for i in range(10)))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--why reads the text in pieces, which pick among at most 9 options; got 10", r.stderr)
 
     def test_the_input_file_flag_is_i_and_f_is_gone(self):
         out = run(DEAD, "--help").stdout
@@ -649,11 +693,11 @@ class CliTests(unittest.TestCase):
         r = self.run_into_closed_pipe(fake.host, "-p", "is this an error?", stdin="boom\n" * 50000)
         self.assertEqual((r.returncode, r.stderr), (0, ""))
 
-    def test_enum_needs_1_to_9_distinct_options(self):
-        for opts in (",", ",".join(f"o{i}" for i in range(10)), "a,A", "a=x,A=y", "a,=orphan"):
+    def test_enum_needs_distinct_named_options(self):
+        for opts in (",", "a,A", "a=x,A=y", "a,=orphan"):
             r = run(DEAD, "-e", opts, "q?", "x")
             self.assertEqual(r.returncode, 2, opts)
-            self.assertIn("-e needs 1 to 9 distinct options", r.stderr, opts)
+            self.assertIn("-e needs distinct named options", r.stderr, opts)
 
     def test_enum_and_labels_together_are_rejected(self):
         r = run(DEAD, "-e", "a,b", "-l", "c,d", "q?", "x")

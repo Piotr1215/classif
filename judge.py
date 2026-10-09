@@ -606,17 +606,19 @@ def enum_options(values):
     return [o for o in out if o.strip()]
 
 
-def enum_labels(ap, values):
+def enum_labels(ap, values, most=9):
     """-e's options as (labels, names, options): the digits the model answers
     with, the names the output carries and the text the model reads, each
-    ending in none."""
+    ending in none. Past nine the labels are None: screen() narrows the
+    options to FINALISTS before the model picks."""
     opts = [o.partition("=") for o in enum_options(values)]
     names = [n.strip() for n, _, _ in opts]
     # One name is enough: none is its alternative, so -e hook is a filter.
-    if not 1 <= len(names) <= 9 or not all(names) or len({n.lower() for n in names}) != len(names):
-        ap.error(f"-e needs 1 to 9 distinct options, got {len(names)}")
+    if not 1 <= len(names) <= (most or len(names)) or not all(names) or len({n.lower() for n in names}) != len(names):
+        ap.error(f"-e needs 1 to {most} distinct options, got {len(names)}" if most else
+                 f"-e needs distinct named options, got {', '.join(names)}")
     # Digits are one token each, so any name scores; 10 and up may not be.
-    labels = [str(i) for i in range(1, len(names) + 1)] + ["0"]
+    labels = [str(i) for i in range(1, len(names) + 1)] + ["0"] if len(names) <= 9 else None
     # The model reads each description; the output carries only the name.
     options = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
     return labels, names + ["none"], options + ["none of these"]
@@ -940,7 +942,8 @@ def main(argv=None, prog="classif"):
     pick = ap.add_mutually_exclusive_group()
     pick.add_argument("-e", "--enum", action="append", metavar="OPTION",
                       help="an answer to pick: name, or name=description, which the model reads as when to pick it. "
-                           "Repeat -e or list names with commas; 1 to 9, plus none. Without -e: yes, no, unknown")
+                           "Repeat -e or list names with commas; plus none. Past 9, each is first asked alone and the "
+                           "3 likeliest picked among. Without -e: yes, no, unknown")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -992,12 +995,15 @@ def main(argv=None, prog="classif"):
 
     names = options = None
     if a.enum is not None:
-        labels, names, options = enum_labels(ap, a.enum)
+        labels, names, options = enum_labels(ap, a.enum, most=None)
+        if labels is None and a.why:
+            ap.error(f"--why reads the text in pieces, which pick among at most 9 options; got {len(names) - 1}")
     else:
         labels = [l.strip() for l in a.labels.split(",") if l.strip()]
         if len(labels) < 2 or len({l.lower() for l in labels}) != len(labels):
             ap.error("need at least two distinct labels")
-    show = dict(zip(labels, names or labels))
+    first = (names or labels)[0]
+    show = dict(zip(labels or [], names or labels or []))
     raw, files = a.input, []
     if a.files is not None:
         raw, files = read_files(ap, a.files)
@@ -1036,7 +1042,22 @@ def main(argv=None, prog="classif"):
     wait = a.deadline
     if wait is None and "CLASSIF_TIMEOUT" not in os.environ:
         wait = 15 + (len(text) + len(context or "")) / READ_RATE
-    r = judge(a.question, text, labels, options, timeout=wait, context=context)
+    r = yes = host = model = None
+    if labels is None:
+        host, model = route()
+        if not host:
+            return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
+        left = (lambda: wait) if a.deadline is None else (lambda: a.deadline - (time.monotonic() - t0))
+        r, yes, names, options = screen(a.question, text, names, options, model, host, left, context)
+        if r is None:
+            labels = [str(i) for i in range(1, len(names))] + ["0"]
+            show = dict(zip(labels, names))
+        elif r.get("overflow"):
+            return unscored(r["unscored"] + ". Past 9 options each is asked of the whole text, which must fit the "
+                            "window", a.json, host=r["host"])
+    if r is None:
+        left = wait if a.deadline is None else a.deadline - (time.monotonic() - t0)
+        r = judge(a.question, text, labels, options, model=model, host=host, timeout=left, context=context)
     if r["label"] is None and r.get("overflow"):
         if not text:
             # Only -c overflowed: past the window the input is read in pieces,
@@ -1072,6 +1093,8 @@ def main(argv=None, prog="classif"):
             res["unsure"] = unsure
         if r["T"]:
             res["p_raw"] = {show[l]: round(v, 3) for l, v in r["p_raw"].items()}
+        if yes:
+            res["screen"] = {n: round(v, 3) for n, v in yes.items()}
         dump(res)
     elif not a.gate:
         print(verdict)
@@ -1081,11 +1104,35 @@ def main(argv=None, prog="classif"):
         sys.stderr.write(f"\033[2m{PROG}: {verdict}\033[0m\n")
     if unsure:
         return 3
-    if label != labels[0]:
+    if show[label] != first:
         return 1
     if a.gate:
         out.write(raw)
     return 0
+
+
+FINALISTS = 3   # options past nine narrow to these before the model picks
+
+
+def screen(question, text, names, options, model, host, left, context):
+    """Past nine -e options, whose digits stop being one token and among
+    which a model picks poorly: ask of each option alone whether it is the
+    answer, then keep the FINALISTS likeliest, in the order given, for one
+    pick. Returns (None, {name: p(yes)}, names, options), the kept names and
+    options ending in none, or (the failed call's result, ...). left() is the
+    seconds the next call may take."""
+    yes, q = {}, question.strip() or DEFAULT_QUESTION
+    for n, o in zip(names[:-1], options[:-1]):
+        t = left()
+        if t is not None and t <= 0:
+            return {"label": None, "unscored": f"{host}: timed out", "host": host}, None, None, None
+        r = judge(f"{q} Is the answer {o}?", text, DEFAULT_LABELS.split(","), model=model, host=host, timeout=t,
+                  context=context)
+        if r["label"] is None:
+            return r, None, None, None
+        yes[n] = r["p"]["yes"]
+    keep = sorted(sorted(range(len(names) - 1), key=lambda i: -yes[names[i]])[:FINALISTS])
+    return None, yes, [names[i] for i in keep] + ["none"], [options[i] for i in keep] + ["none of these"]
 
 
 class Progress:

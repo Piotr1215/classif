@@ -10,6 +10,8 @@ import unittest
 
 from cli import E2E, HOST, MODE, MODEL, judgement
 
+COMMANDS = "ls,cd,grep,find,sed,awk,tar,ssh,curl,chmod,ps,kill"
+
 
 class Flags(E2E):
     def test_json_scores_every_label_and_the_scores_sum_to_one(self):
@@ -77,10 +79,20 @@ class Flags(E2E):
         self.assertEqual(self.label("What colour does this describe?", "a sound like thunder", "-e", "red,green,blue"),
                          (1, "none"))
 
-    def test_ten_options_are_refused(self):
-        r = self.cli("pick", "x", "-e", "a,b,c,d,e,f,g,h,i,j")
-        self.assertEqual(r.rc, 2)
-        self.assertIn("-e needs 1 to 9 distinct options, got 10", r.err)
+    def test_past_nine_options_each_is_screened_and_the_pick_names_one(self):
+        r = self.cli("-j", "Which command does this describe?", "stop process 1234", "-e", COMMANDS)
+        d = json.loads(r.out)
+        self.assertEqual(set(d["screen"]), set(COMMANDS.split(",")))
+        self.assertEqual(len(d["p"]), 3 + 1)
+        self.assertIn(d["label"], d["p"])
+
+    def test_rank_orders_every_candidate_best_first(self):
+        r = self.cli("rank", "-j", "Is this a fruit?", "a hammer", "an apple", "a pear")
+        d = json.loads(r.out)
+        self.assertEqual(r.rc, 0)
+        self.assertEqual(sorted(row["name"] for row in d["ranking"]), ["a hammer", "a pear", "an apple"])
+        scores = [row["score"] for row in d["ranking"]]
+        self.assertEqual(scores, sorted(scores, reverse=True))
 
     def test_files_joined_with_a_comma_read_as_repeated_i(self):
         self.write("a.txt", "Alice is in Berlin today.\n")
@@ -120,6 +132,15 @@ class Flags(E2E):
 class FlagJudgement(E2E):
     def test_a_question_the_text_cannot_answer_is_unknown(self):
         self.assertEqual(self.label("Is the author left-handed?", "I bought milk."), (1, "unknown"))
+
+    def test_past_nine_options_the_screen_finds_the_one_described(self):
+        for text, want in (("stop process 1234", "kill"), ("make the script executable", "chmod"),
+                           ("pack the folder into one archive file", "tar")):
+            self.assertEqual(self.label("Which command does this describe?", text, "-e", COMMANDS), (1, want))
+
+    def test_rank_puts_the_fruit_first(self):
+        d = json.loads(self.cli("rank", "-j", "Is this a fruit?", "a hammer", "an apple").out)
+        self.assertEqual([row["name"] for row in d["ranking"]], ["an apple", "a hammer"])
 
     def test_a_policy_in_context_turns_unknown_into_yes(self):
         policy = self.write("policy.txt", "Change policy: no production deploys after 18:00 on Fridays.\n")

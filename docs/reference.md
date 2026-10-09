@@ -12,7 +12,7 @@ Short inputs use one whole-input call. A server-confirmed context overflow switc
 
 | Flag | Meaning |
 | --- | --- |
-| `-e OPTION` | An answer to pick: a name, or `name=description`. The model reads the description as when to pick that option; only the name is printed. Repeat `-e` for each option, or list names with commas or newlines. One to nine options, plus `none`; the first exits 0. A description runs to the next `name=`, so it may hold commas. Unquoted, its words run to the next option or quoted value, so a one-word text goes before `-e`. Without `-e` the answers are `yes`, `no` and `unknown`. |
+| `-e OPTION` | An answer to pick: a name, or `name=description`. The model reads the description as when to pick that option; only the name is printed. Repeat `-e` for each option, or list names with commas or newlines. Any number of options, plus `none`; the first exits 0. Past nine, each option is first asked alone (`QUESTION Is the answer NAME (description)?`, yes or no), and the three likeliest, in the order given, go to one pick; see [past nine options](#past-nine-options). A description runs to the next `name=`, so it may hold commas. Unquoted, its words run to the next option or quoted value, so a one-word text goes before `-e`. Without `-e` the answers are `yes`, `no` and `unknown`. |
 | `-p` | Print the input unchanged when the first label wins. |
 | `-j` | Print scores and request metadata as JSON. Pipe through `python3 -m json.tool` to indent it. |
 | `-t P` | Exit 3 and mark the result unsure when the winning probability is below P. A pipe gate then passes nothing. |
@@ -78,6 +78,17 @@ p(yes)  answer     candidate
 
 Each call is the direct path above with its own timeout; candidates are judged one after another on one host.
 
+## Past nine options
+
+A model picks among a few options well and among many poorly, and option digits past 9 are no longer one token. Past nine `-e` options, classif asks each option alone whether it is the answer, keeps the three with the highest p(yes) in the order given, and asks the question once more with those three and `none`. The text and `-c` come first in every prompt, so after the first call each costs little more than its question: twelve options answered in about 1.3 s on this laptop, against about 0.2 s for one three-option call (2026-10-09, `winnow:12b-q4_K_M`, wall time including startup).
+
+```sh
+classif "Which command does this describe?" "stop process 1234" -e ls,cd,grep,find,sed,awk,tar,ssh,curl,chmod,ps,kill
+kill 0.98
+```
+
+`p` is the final pick's, over the finalists and `none`, so it does not say how the other options fared; `-j` carries each option's p(yes) as `screen`. The exit code is 0 only when the first option given wins. A text past the window and `--why` read in pieces that pick among at most nine options, so past nine both are refused. No eval set covers more than nine options yet: a live check put six of six short command descriptions on the right one of twelve commands.
+
 ## Long-input claims
 
 ```text
@@ -138,6 +149,7 @@ The graph reports its window, traversal hops, unresolved links and failures. `re
 - `T` is the fitted temperature, or `null`. `p_raw` appears only when `T` is set.
 - `unsure` appears only with `-t`.
 - `context` is the `-c` path, present only when one was given.
+- `screen` appears past nine `-e` options: each option's p(yes) from its own call. `p` then covers the three finalists and `none`.
 
 ## Calibration
 
