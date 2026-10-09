@@ -29,7 +29,9 @@ that want yes or no.
 Candidates: arguments after QUESTION, each one candidate as text, and -i
 FILE... (each file one candidate, named by its file name); else lines on
 stdin, each a JSON object {"name", "text"} or plain text that is both; else
-the decision file's "candidates" command, which prints either.
+the decision file's "candidates" command, which prints either. With none, as
+in classif, the context is the one text judged, so a single decision gets
+its answer and the context lines it rests on.
 
 A decision file is NAME.json in $DECIDE_DIR (default ~/.config/decide), or a
 path to one:
@@ -45,6 +47,11 @@ repeatable, gives every criterion without a context of its own a context: each
 a file or the text itself, joined in order. Keep it short, a hand-written list
 of goals rather than a vault: it must fit the model's window beside each
 candidate, and over 60 lines it is not marked.
+
+The report names each question (q1, q2... for QUESTION, -y and -n) with the
+answer that counts for a candidate, then one row per candidate, best first:
+the score, and for each question the answer the model gave with its p.
+unknown means the text does not settle the question; it counts against.
 
 Marks: for the top N (-x, default 1, 0 for none) each non-blank line of the
 candidate's text, then of each criterion's context, is dropped in turn and the
@@ -81,6 +88,7 @@ MARKS = 3
 VERDICT_Q = "What should happen to this?"
 EXAMPLES = """examples:
   decide.py "Is this the right next step?" -c goals.md "renew the passport" "reorganize the bookshelf"
+  decide.py "Should I go to sleep now?" -c "$(date)" -c plans.md
   task export | jq -r '.[].description' |
     decide.py "What should happen to this task?" -c goals.md \\
       -e "prioritize=do it this week" -e "defer=not now" -e "drop=serves no goal"
@@ -88,7 +96,7 @@ EXAMPLES = """examples:
 
 The candidates are the options to rank: arguments after the question, lines or
 JSON lines {"name", "text"} on stdin, or -i files. -y and -n take whole
-questions. decide never invents options."""
+questions. decide never invents options; with none, the context is judged."""
 PROG = Path(sys.argv[0]).name
 CLASSIF = shutil.which("classif") or str(Path(__file__).resolve().parents[1] / "classif")
 
@@ -226,7 +234,7 @@ def wanted(crit, answer, label=None):
 def rank(cands, crits):
     ranked = []
     for c in cands:
-        p, verdict = {}, None
+        p, answers, verdict = {}, {}, None
         for k in crits:
             a = ask(c["text"], k)
             if a is None or wanted(k, a) is None:
@@ -234,6 +242,7 @@ def rank(cands, crits):
                 break
             if k["kind"] == "label":
                 p[k["name"]] = wanted(k, a)
+                answers[k["name"]] = {"label": max(a[1], key=a[1].get), "p": a[1]}
             else:
                 verdict = {"label": a[0], "p": a[1]}
         else:
@@ -243,7 +252,7 @@ def rank(cands, crits):
                     score *= v
             else:
                 score = next(iter(verdict["p"].values()))
-            ranked.append({"name": c["name"], "score": score, "p": p,
+            ranked.append({"name": c["name"], "score": score, "p": p, "answers": answers,
                            **({"verdict": verdict} if verdict else {}), "text": c["text"]})
     ranked.sort(key=lambda r: -r["score"])
     return ranked
@@ -311,14 +320,14 @@ def report(question, crits, ranked):
     out = [question] if question else []
     w = max(len(k["name"]) for k in crits)
     for k in crits:
-        want = f"want {k['want']:<3}" if k["kind"] == "label" else "one of  "
-        out.append(f"  {k['name']:<{w}}  {want}  {k['question']}"
+        counts = f"{k['want']} counts" if k["kind"] == "label" else "one of"
+        out.append(f"  {k['name']:<{w}}  {counts:<10}  {k['question']}"
                    + (f" ({', '.join(option_names(k['options']))})" if k["kind"] == "enum" else ""))
     out.append("")
     rows = [["score"] + [k["name"] for k in crits] + ["candidate"]]
     for r in ranked:
-        cells = [f"{r['p'][k['name']]:.3f}" if k["kind"] == "label"
-                 else f"{r['verdict']['label']} {r['verdict']['p'][r['verdict']['label']]:.3f}" for k in crits]
+        said = [r["answers"][k["name"]] if k["kind"] == "label" else r["verdict"] for k in crits]
+        cells = [f"{a['label']} {a['p'][a['label']]:.3f}" for a in said]
         rows.append([f"{r['score']:.3f}"] + cells + [short(r["name"])])
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     out += ["  ".join(c.ljust(widths[i]) for i, c in enumerate(row)).rstrip() for row in rows]
@@ -365,6 +374,7 @@ def main(argv=None):
                     help="context for criteria without one: a file or the text itself; repeatable")
     ap.add_argument("-k", dest="top", type=int, metavar="N", help="show only the top N; the record keeps all")
     ap.add_argument("-x", dest="explain", type=int, default=1, metavar="N", help="mark the top N (default 1)")
+    ap.add_argument("-w", "--why", action="store_true", help="mark the top pick, as -x 1, the default")
     ap.add_argument("-j", dest="json", action="store_true", help="print the record instead of the report")
     ap.add_argument("-i", dest="files", action="extend", nargs="+", default=[], metavar="FILE",
                     help="candidates, one per file")
@@ -375,10 +385,18 @@ def main(argv=None):
 
     decision = load_decision(a.decision) if a.decision else {"name": "adhoc"}
     adhoc = a.adhoc if a.options or not a.question else [("yes", a.question)] + a.adhoc
-    crits = criteria_of(decision, adhoc, a.question if a.options else None, a.options, read_context(a.context))
+    shared = read_context(a.context)
+    crits = criteria_of(decision, adhoc, a.question if a.options else None, a.options, shared)
     if not crits:
         die("no question: give QUESTION, -y, -n or -e, or -d with a decision file")
     cands = candidates_of(a.texts, a.files, decision)
+    if not cands and shared:
+        # As in classif: with no input, the context is the text judged.
+        cands = [{"name": ", ".join(Path(v).name if os.path.isfile(v) else "context" for v in a.context),
+                  "text": shared}]
+        for k in crits:
+            if k["context"] == shared:
+                k["context"] = None
     if not cands:
         die("no candidates: give the options to rank after the question, on stdin or with -i FILE..., e.g.\n"
             f"  {PROG} \"Is this the right next step?\" -c goals.md \"first option\" \"second option\"", 1)
@@ -391,7 +409,7 @@ def main(argv=None):
         ranked = rank(cands, crits)
         if not ranked:
             die("nothing could be scored", 1)
-        for row in ranked[:max(a.explain, 0)]:
+        for row in ranked[:max(a.explain, 1 if a.why else 0)]:
             mark(row, crits, tmp)
 
     path, record = write_record(decision["name"], decision.get("question"), crits, ranked)

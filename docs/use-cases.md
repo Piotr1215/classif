@@ -228,7 +228,7 @@ printf '%s\n' "Sign up for a 10-week running plan" "Rewrite the side project's C
 ```
 
 ```text
-  verdict  one of    What should happen to this task? (prioritize, defer, drop)
+  verdict  one of      What should happen to this task? (prioritize, defer, drop)
 
 score  verdict           candidate
 0.979  prioritize 0.979  Sign up for a 10-week running plan

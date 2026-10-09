@@ -95,12 +95,13 @@ class DecideTest(unittest.TestCase):
         r = self.decide("Is it fun?", "-n", "Is it far?", stdin="fun near\nfun far\ndull near\n",
                         rules=[{"q": "fun", "has": "fun", "d": 0.4}, {"q": "far", "has": "far", "d": 0.3}])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("  q1  want yes  Is it fun?", r.stdout)
-        self.assertIn("  q2  want no   Is it far?", r.stdout)
-        # fun near 0.9 * 0.5, dull near 0.5 * 0.5, fun far 0.9 * 0.2
-        self.assertEqual(scores(r.stdout), [["0.450", "0.900", "0.500", "fun", "near"],
-                                            ["0.250", "0.500", "0.500", "dull", "near"],
-                                            ["0.180", "0.900", "0.200", "fun", "far"]])
+        self.assertIn("  q1  yes counts  Is it fun?", r.stdout)
+        self.assertIn("  q2  no counts   Is it far?", r.stdout)
+        # fun near 0.9 * p(no) 0.5, dull near 0.5 * 0.5, fun far 0.9 * p(no) 0.2;
+        # each cell is the answer the model gave
+        self.assertEqual(scores(r.stdout), [["0.450", "yes", "0.900", "yes", "0.500", "fun", "near"],
+                                            ["0.250", "yes", "0.500", "yes", "0.500", "dull", "near"],
+                                            ["0.180", "yes", "0.900", "yes", "0.800", "fun", "far"]])
 
     def test_files_are_candidates_and_marks_name_the_line_that_moved_p(self):
         (self.tmp / "a.txt").write_text("fun thing\nboring line\n")
@@ -121,7 +122,7 @@ class DecideTest(unittest.TestCase):
                                {"q": "happen", "has": "race", "d": 0.15, "in": "ctx"},
                                {"q": "happen", "has": "shelf", "d": -0.4}])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("  verdict  one of    What should happen to this task? (prioritize, defer, drop)", r.stdout)
+        self.assertIn("  verdict  one of      What should happen to this task? (prioritize, defer, drop)", r.stdout)
         # run plan: 0.5 + 0.3 + 0.15 = 0.95; shelf: 0.5 + 0.15 - 0.4 = 0.25, drop at 0.75 * 0.7
         self.assertEqual(scores(r.stdout), [["0.950", "prioritize", "0.950", "run", "plan"],
                                             ["0.250", "drop", "0.525", "shelf"]])
@@ -131,16 +132,32 @@ class DecideTest(unittest.TestCase):
 
     def test_the_question_comes_before_y_and_n_and_a_verdict_takes_it_instead(self):
         r = self.decide("Is it fun?", "-y", "Is it near?", "-x", "0", stdin="fun\n")
-        self.assertIn("  q1  want yes  Is it fun?\n  q2  want yes  Is it near?\n", r.stdout)
+        self.assertIn("  q1  yes counts  Is it fun?\n  q2  yes counts  Is it near?\n", r.stdout)
         r = self.decide("Keep it?", "-y", "Is it near?", "-e", "keep", "-e", "toss", "-x", "0", stdin="fun\n")
-        self.assertIn("  q1       want yes  Is it near?\n  verdict  one of    Keep it? (keep, toss)\n", r.stdout)
+        self.assertIn("  q1       yes counts  Is it near?\n  verdict  one of      Keep it? (keep, toss)\n", r.stdout)
 
     def test_candidates_can_be_arguments_after_the_question_among_options(self):
         r = self.decide("-c", "Goal: fun", "Is it fun?", "fun walk", "-x", "0", "dull chore",
                         stdin="ignored when arguments are given\n", rules=[{"q": "fun", "has": "walk", "d": 0.3}])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(scores(r.stdout), [["0.800", "0.800", "fun", "walk"], ["0.500", "0.500", "dull", "chore"]])
+        self.assertEqual(scores(r.stdout), [["0.800", "yes", "0.800", "fun", "walk"],
+                                            ["0.500", "yes", "0.500", "dull", "chore"]])
         self.assertEqual(self.record()["criteria"][0]["context"], "Goal: fun")
+
+    def test_with_no_candidates_the_context_is_judged_and_its_lines_marked(self):
+        r = self.decide("Is it fun?", "-c", "fun line\nplain line", rules=[{"q": "fun", "has": "fun", "d": 0.4}])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(scores(r.stdout), [["0.900", "yes", "0.900", "context"]])
+        self.assertIn("why context: lines whose removal moves the answer most\n  q1\n    +0.400  fun line\n", r.stdout)
+        rec = self.record()
+        self.assertEqual((rec["criteria"][0]["context"], rec["ranking"][0]["text"]), (None, "fun line\nplain line"))
+
+    def test_an_unknown_answer_shows_as_unknown_and_counts_against(self):
+        stub = Path(self.env["PATH"].split(":")[0]) / "classif"
+        stub.write_text("#!/bin/sh\ncat >/dev/null\n"
+                        "echo '{\"label\": \"unknown\", \"p\": {\"yes\": 0.05, \"no\": 0.15, \"unknown\": 0.8}}'\nexit 1\n")
+        r = self.decide("-n", "Should I eat bread?", "-x", "0", stdin="a license\n")
+        self.assertEqual(scores(r.stdout), [["0.150", "unknown", "0.800", "a", "license"]])
 
     def test_k_narrows_the_report_and_the_record_keeps_every_candidate(self):
         r = self.decide("-y", "Is it fun?", "-k", "1", "-x", "0", stdin="fun\ndull\nflat\n",
@@ -160,7 +177,7 @@ class DecideTest(unittest.TestCase):
         })
         r = self.decide("-d", "lunch", rules=[{"q": "cheap", "has": "cheap", "d": 0.3}])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(r.stdout.startswith("Where to eat?\n  cheap  want yes  Is it cheap?\n\n"))
+        self.assertTrue(r.stdout.startswith("Where to eat?\n  cheap  yes counts  Is it cheap?\n\n"))
         self.assertEqual([row[-1] for row in scores(r.stdout)], ["cafe", "diner"])
         rec = self.record("lunch")
         self.assertEqual((rec["decision"], rec["question"]), ("lunch", "Where to eat?"))
@@ -187,6 +204,7 @@ class DecideTest(unittest.TestCase):
         (row,) = printed["ranking"]
         self.assertEqual((row["name"], row["score"], row["p"], row["text"]), ("a", 0.9, {"q1": 0.9}, "fun one\nplain"))
         self.assertEqual(row["marks"], {"q1": [{"from": "text", "line": "fun one", "delta": 0.4}]})
+        self.assertEqual(row["answers"], {"q1": {"label": "yes", "p": {"yes": 0.9, "no": 0.1, "unknown": 0.0}}})
         self.assertIn(f"decide: record in {Path(self.env['XDG_STATE_HOME'])}/decide/adhoc/", r.stderr)
 
     def test_an_unscored_candidate_is_left_out_and_nothing_scored_exits_1(self):
