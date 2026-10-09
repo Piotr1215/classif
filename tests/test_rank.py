@@ -87,6 +87,13 @@ class RankTests(unittest.TestCase):
         self.assertEqual([row.split(None, 3)[-1] for row in r.stdout.splitlines()[1:]],
                          ["ci", "reorganize the bookshelf"])
 
+    def test_terminal_escapes_are_dropped_from_names_and_texts(self):
+        fake = self.serve()
+        line = "\x1b[1;33mr\x1b[31mw\x1b[0m notes.md \x1b]8;;file:///notes.md\x1b\\link\x1b]8;;\x1b\\"
+        r = run(fake.host, "rank", "Is this a file?", stdin=line + "\n")
+        self.assertEqual(r.stdout.splitlines()[1], "0.500   yes 0.500  rw notes.md link")
+        self.assertNotIn("\x1b", fake.requests[0]["messages"][-1]["content"])
+
     def test_with_no_candidates_the_context_is_the_one_judged(self):
         fake = self.serve(("tired", 0.4))
         plans = self.file("plans.md", "I am tired\nAlarm at 6")

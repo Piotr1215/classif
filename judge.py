@@ -777,9 +777,20 @@ MARK_MIN = 0.005    # a smaller move is noise: identical runs differ by about 0.
 MARKS = 3
 
 
+# Terminal escapes: colours and cursor moves (CSI), hyperlinks and titles
+# (OSC), and the two-byte rest. A coloured `ls` writes them into a pipe.
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
 def candidates(ap, texts, files):
     """The candidates as [{name, text}]: each argument, then each -i file named
-    by its file name; else each stdin line, plain text or JSON {"name", "text"}."""
+    by its file name; else each stdin line, plain text or JSON {"name", "text"}.
+    Terminal escapes are dropped: they mean nothing to the model, and a name
+    that starts with them prints as noise."""
+    return [{k: ANSI.sub("", v) for k, v in c.items()} for c in read_candidates(ap, texts, files)]
+
+
+def read_candidates(ap, texts, files):
     out = [{"name": t, "text": t} for t in texts]
     for path in files or []:
         try:
