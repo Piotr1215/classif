@@ -410,6 +410,11 @@ def main():
         return 2
     if first == "tag":
         return cls.tag_main(sys.argv[2:])
+    if first == "rank":
+        # Renamed: read as a question, an old call would answer something else.
+        print("classif: rank is now each: classif each QUESTION ITEM ...; its JSON rows are under items",
+              file=sys.stderr)
+        return 2
     if first == "each":
         try:
             return cls.each_main(sys.argv[2:])

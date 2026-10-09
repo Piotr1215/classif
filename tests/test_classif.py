@@ -115,6 +115,13 @@ class SpecDirTests(Base):
         self.assertIn("For hooks and spec authoring: classify, smoke", r.stdout)
         self.assertTrue(r.stdout.rstrip().endswith("Full documentation <https://github.com/Piotr1215/classif>"))
 
+    def test_rank_names_its_new_name_instead_of_being_asked_as_a_question(self):
+        r = subprocess.run([str(ROOT / "classif"), "rank", "Is this a folder?"], capture_output=True, text=True,
+                           input="docs\n", env=dict(os.environ), timeout=10)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("rank is now each", r.stderr)
+
     def test_specs_lists_each_spec_with_the_fields_classify_wants(self):
         (self.tmp / "specs" / "broken.json").write_text("{not json")
         r = subprocess.run([str(ROOT / "classif"), "specs"], capture_output=True, text=True,
