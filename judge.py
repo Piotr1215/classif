@@ -328,21 +328,53 @@ def score_confidence(p):
     return max(0.0, 1 - sum(v * abs(i - m) for i, v in enumerate(p)) / even)
 
 
+def level_options(values):
+    """Every -s's levels, low to high, each "name" or "name=description". A
+    value with a newline holds one level per line; one with an = splits as
+    -e does. Otherwise commas separate levels only when each is one word, so
+    -s low,mid,high is three and -s "Broken, but a workaround exists" one."""
+    out = []
+    for v in values:
+        pieces = v.split(",")
+        if "\n" in v:
+            out += v.split("\n")
+        elif "=" in v:
+            out += enum_options([v])
+        elif len(pieces) > 1 and all(len(piece.split()) == 1 for piece in pieces):
+            out += pieces
+        else:
+            out.append(v)
+    return [o.strip() for o in out if o.strip()]
+
+
 def score_levels(ap, values):
-    """-s's levels as (labels, levels): the digits 0 to n-1 the model answers
-    with, low to high, and the descriptions it reads. One level per -s, so a
-    description may hold commas; digits are one token each, so at most 10."""
-    levels = [v.strip() for v in values]
-    if not 2 <= len(levels) <= 10 or not all(levels):
-        ap.error(f"-s needs 2 to 10 levels, one per -s, got {len(levels)}")
-    return [str(i) for i in range(len(levels))], levels
+    """-s's levels as (labels, names, levels): the digits 0 to n-1 the model
+    answers with, low to high, the names the output carries and the text the
+    model reads. Digits are one token each, so at most 10."""
+    opts = [o.partition("=") for o in level_options(values)]
+    names = [n.strip() for n, _, _ in opts]
+    if not 2 <= len(names) <= 10:
+        ap.error(f"-s needs 2 to 10 levels, low to high, e.g. -s low,mid,high; what they grade goes in the "
+                 f"question, got {len(names)}")
+    if not all(names) or len({n.lower() for n in names}) != len(names):
+        ap.error(f"-s needs distinct named levels, got {', '.join(names)}")
+    levels = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
+    return [str(i) for i in range(len(names))], names, levels
 
 
-def score_answer(r, levels):
-    """judge()'s result over the level digits as Jev's Score answer fields."""
-    p = [r["p"][str(i)] for i in range(len(levels))]
-    return {"type": "score", "score": level_score(p), "confidence": score_confidence(p),
-            "legend": {str(i): l for i, l in enumerate(levels)}, "probabilities": {str(i): v for i, v in enumerate(p)}}
+def nearest_level(score, n):
+    """The level a score sits closest to, a half rounding up."""
+    return min(n - 1, int(score + 0.5))
+
+
+def score_answer(r, names):
+    """judge()'s result over the level digits as Jev's Score answer fields,
+    plus the name of the level nearest the score."""
+    p = [r["p"][str(i)] for i in range(len(names))]
+    score = level_score(p)
+    return {"type": "score", "level": names[nearest_level(score, len(names))], "score": score,
+            "confidence": score_confidence(p), "legend": {str(i): l for i, l in enumerate(names)},
+            "probabilities": {str(i): v for i, v in enumerate(p)}}
 
 
 def server_error(body):
@@ -600,7 +632,7 @@ class Help(argparse.HelpFormatter):
 
 
 EPILOG = """\
-Output: LABEL P, the winner and its probability; with -s, SCORE CONFIDENCE; -j for JSON. Exit: 0 when the first option wins (yes) or a score is read, 1 for another option, 2 unscored, 3 insufficient or below -t.
+Output: LABEL P, the winner and its probability; with -s, LEVEL SCORE, the level nearest the score and the score; -j for JSON. Exit: 0 when the first option wins (yes) or a score is read, 1 for another option, 2 unscored, 3 insufficient or below -t.
 
 Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
 
@@ -616,7 +648,7 @@ def join_descriptions(argv):
     while i < len(argv):
         out.append(argv[i])
         i += 1
-        if out[-1] in ("-e", "--enum") and i < len(argv) and "=" in argv[i] and not re.search(r"\s", argv[i]):
+        if out[-1] in ("-e", "--enum", "-s", "--score") and i < len(argv) and "=" in argv[i] and not re.search(r"\s", argv[i]):
             words = [argv[i]]
             i += 1
             while i < len(argv) and argv[i] and not argv[i].startswith("-") and not re.search(r"\s", argv[i]):
@@ -910,8 +942,9 @@ def rounded(v, n=4):
 
 
 def print_levels(head, answer):
-    """Where a Score's probability went: each level's number, p and text."""
-    print(head)
+    """Where a Score's probability went: each level's number, p and name,
+    under head and the answer's confidence."""
+    print(f"{head}, confidence {answer['confidence']:.2f}")
     for i, v in answer["probabilities"].items():
         print(f"  {i}  {v:.2f}  {short(answer['legend'][i], 100)}")
 
@@ -934,8 +967,8 @@ def each_main(argv, prog="classif each"):
                       help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
                            "option is the one items sort by")
     pick.add_argument("-s", "--score", dest="levels", action="append", metavar="LEVEL",
-                      help="a level of a score, as in classif -s: repeat it for each, low to high, 2 to 10. Items "
-                           "sort by score, highest first")
+                      help="a level of the ladder the question grades on, as in classif -s: low to high, 2 to 10, "
+                           "name or name=description. Items sort by score, highest first")
     ap.add_argument("-c", "--context", metavar="TEXT",
                     help="background read before every item, such as goals: a file, <(cmd) or the text itself. "
                          "With no items, it is the one judged")
@@ -951,7 +984,7 @@ def each_main(argv, prog="classif each"):
         ap.error(f"-k wants 1 or more, got {a.top}")
     levels = None
     if a.levels:
-        (labels, levels), names, options = score_levels(ap, a.levels), None, None
+        (labels, level_names, levels), names, options = score_levels(ap, a.levels), None, None
     elif a.enum:
         labels, names, options = enum_labels(ap, a.enum, most=None)
     else:
@@ -983,7 +1016,7 @@ def each_main(argv, prog="classif each"):
             ls = [str(i) for i in range(1, len(ns))] + ["0"]
         if levels:
             r = judge(a.question, text, labels, levels, model=model, host=host, timeout=wait, context=ctx, scale=True)
-            return r if r["label"] is None else {"label": r["label"], **score_answer(r, levels)}
+            return r if r["label"] is None else {"label": r["label"], **score_answer(r, level_names)}
         r = judge(a.question, text, ls, os_, model=model, host=host, timeout=wait, context=ctx)
         if r["label"] is None:
             return r
@@ -1012,7 +1045,7 @@ def each_main(argv, prog="classif each"):
     shown = scored[:a.top] if a.top else scored
 
     if a.json:
-        keep = ("score", "confidence", "probabilities") if levels else ("score", "label", "p")
+        keep = ("level", "score", "confidence", "probabilities") if levels else ("score", "label", "p")
         rows = [{"name": row["name"], **{k: rounded(row[k]) for k in keep},
                  **{k: row[k] for k in ("marks", "unmarked") if k in row}} for row in shown]
         dump({"question": a.question, **({"options": names[:-1]} if names else {}),
@@ -1021,8 +1054,8 @@ def each_main(argv, prog="classif each"):
               **({"unscored": missed} if missed else {}), "model": model, "host": host})
         return 0
     if levels:
-        table = [["score", "conf", "item"]] + [
-            [f"{row['score']:.2f}", f"{row['confidence']:.2f}", short(row["name"])] for row in shown]
+        table = [["score", "level", "item"]] + [
+            [f"{row['score']:.2f}", row["level"], short(row["name"])] for row in shown]
     else:
         table = [[f"p({first})", "answer", "item"]] + [
             [f"{row['score']:.3f}", f"{row['label']} {row['p'][row['label']]:.3f}", short(row["name"])] for row in shown]
@@ -1056,8 +1089,10 @@ def main(argv=None, prog="classif"):
                            "Repeat -e or list names with commas; plus none. Past 9, each is first asked alone and the "
                            "3 likeliest picked among. Without -e: yes, no, unknown")
     pick.add_argument("-s", "--score", dest="levels", action="append", metavar="LEVEL",
-                      help="a level of a score instead of a pick: repeat -s for each, low to high, 2 to 10, each a "
-                           "situation the model can match. Prints the score, 0 to the top level, and its confidence")
+                      help="a level of the ladder the question grades on, instead of a pick: low to high, 2 to 10, "
+                           "name or name=description, which the model reads as the situation it means. Repeat -s "
+                           "or list names with commas. Prints the level nearest the score and the score, 0 to the "
+                           "top level")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -1231,13 +1266,14 @@ def main(argv=None, prog="classif"):
     return 0
 
 
-def score_main(a, text, context, labels, levels):
+def score_main(a, text, context, labels, names, levels):
     """-s: a Score question, modeled on Jev's Score. One call reads the
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
-    Jev's Score formula. Prints SCORE CONFIDENCE; -t gates on the confidence.
-    -w adds where the probability went and the lines whose removal moves the
-    score most. Exit 0 scored, 2 unscored, 3 under -t."""
+    Jev's Score formula. Prints LEVEL SCORE, the level nearest the score;
+    -t gates on the confidence. -w adds where the probability went, with the
+    confidence, and the lines whose removal moves the score most. Exit 0
+    scored, 2 unscored, 3 under -t."""
     host, model = route()
     if not host:
         return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
@@ -1247,7 +1283,7 @@ def score_main(a, text, context, labels, levels):
         left = a.deadline - (time.monotonic() - t0) if a.deadline is not None else (
             None if "CLASSIF_TIMEOUT" in os.environ else 15 + (len(t) + len(ctx or "")) / READ_RATE)
         r = judge(a.question, t, labels, levels, model=model, host=host, timeout=left, context=ctx, scale=True)
-        return r if r["label"] is None else {**r, **score_answer(r, levels)}
+        return r if r["label"] is None else {**r, **score_answer(r, names)}
 
     r = ask(text, context)
     if r["label"] is None:
@@ -1259,7 +1295,7 @@ def score_main(a, text, context, labels, levels):
     if a.why:
         marks, unmarked = mark_lines(ask, text, context, r["score"])
     if a.json:
-        res = {k: rounded(r[k], 3) for k in ("type", "score", "confidence", "legend", "probabilities")}
+        res = {k: rounded(r[k], 3) for k in ("type", "level", "score", "confidence", "legend", "probabilities")}
         res.update({"T": r["T"], "logp": rounded(r["logp"], 3), "mass": round(r["mass"], 3), "model": r["model"],
                     "host": r["host"], "ms": r["ms"], "mode": "direct"})
         if r["T"]:
@@ -1272,7 +1308,7 @@ def score_main(a, text, context, labels, levels):
             res.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
         dump(res)
     else:
-        print(f"{r['score']:.2f} {r['confidence']:.2f}" + (" unsure" if unsure else ""))
+        print(f"{r['level']} {r['score']:.2f}" + (" unsure" if unsure else ""))
         if a.why:
             print_levels("where the probability went", r)
             print_marks("why", "the score", marks, unmarked)
