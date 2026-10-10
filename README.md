@@ -92,7 +92,7 @@ printf '%s\n' 'Fix a startup crash.' |
 
 `-e` accepts any number of options and adds `none` when no option fits; past nine, classif asks about each option alone and picks among the three likeliest. Quote descriptions in scripts. Repeated `-i` files, or `-i a,b`, join several sources as one input. A positional input is literal text even when it looks like a filename.
 
-`-s` grades the input on a ladder instead of picking an option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). The question names what is graded, and each `-s` is one level, low to high, as `name` or `name=description` like `-e`. classif prints the likeliest level, then the grade on 0 to 1, the probability-weighted score over the top level. `-s` alone grades a "how X is it?" question from not at all to extremely. `classif each -s` sorts a list by it; see [a score](docs/reference.md#a-score).
+`-s` grades the input on a ladder instead of picking an option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). The question names what is graded, and each `-s` is one level, low to high, as `name` or `name=description` like `-e`. classif prints the level nearest the grade, then the grade on 0 to 1, the probability-weighted score over the top level; at a terminal a dim stderr line says what 0 and 1 are and which level the model chose most. `-s` alone grades a "how X is it?" question from not at all to extremely. `classif each -s` sorts a list by it; see [a score](docs/reference.md#a-score).
 
 ```sh
 ./classif "How restrictive is this license for code shipped in a closed-source product?" -i LICENSE \

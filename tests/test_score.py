@@ -6,11 +6,14 @@ run the real command against a fake Ollama whose level probabilities are set
 by words in the text, so every number below is computed by hand."""
 import json
 import math
+import os
+import pty
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from test_judge import FakeOllama, chat, load, run
+from test_judge import SCRIPT, FakeOllama, chat, env, load, run
 
 LEVELS = ["-s", "Cosmetic; no impact", "-s", "Broken, but a workaround exists", "-s", "Blocking; no workaround"]
 NAMED = ["-s", "cosmetic=no impact", "-s", "workaround=broken, but a workaround exists", "-s", "blocking=no workaround"]
@@ -42,7 +45,10 @@ class ScoreMathTests(unittest.TestCase):
                         ([0.0, 0.74, 0.26], 0.61), ([0.0, 0.0, 0.0, 1.0], 1.0), ([1 / 3] * 3, 0.0)]:
             self.assertAlmostEqual(self.cls.score_confidence(p), want, places=2, msg=p)
 
-    def test_the_level_named_is_the_likeliest_a_tie_going_to_the_lower(self):
+    def test_the_level_named_is_the_one_nearest_the_score_a_half_rounding_up(self):
+        self.assertEqual([self.cls.nearest_level(s, 3) for s in (0.0, 0.49, 0.5, 1.49, 1.5, 2.0)], [0, 0, 1, 1, 2, 2])
+
+    def test_the_likeliest_level_takes_the_lower_on_a_tie(self):
         self.assertEqual([self.cls.likeliest_level(p) for p in ([0.8, 0.1, 0.1], [0.1, 0.3, 0.6], [0.5, 0.0, 0.5])],
                          [0, 2, 0])
 
@@ -57,16 +63,42 @@ class ScoreTests(unittest.TestCase):
         self.addCleanup(fake.close)
         return fake
 
-    def test_prints_the_likeliest_level_and_the_grade_on_0_to_1_from_one_call(self):
+    def test_prints_the_grade_on_0_to_1_and_the_level_nearest_it_from_one_call(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED)
         self.assertEqual((r.returncode, r.stdout), (0, "workaround 0.70\n"))
         self.assertEqual(len(fake.requests), 1)
 
-    def test_a_level_the_model_barely_chose_is_not_named_though_the_score_sits_on_it(self):
+    def test_the_word_names_the_printed_grade_even_on_a_split_answer(self):
         fake = self.serve(("split", (0.55, 0.0, 0.45)))
         r = run(fake.host, "How severe is it?", "a split report", *NAMED)
-        self.assertEqual(r.stdout, "cosmetic 0.45\n")
+        self.assertEqual((r.stdout, r.stderr), ("workaround 0.45\n", ""))
+
+    def run_with_terminal_stderr(self, hosts, *args):
+        """(stdout, what reached the terminal on stderr)."""
+        master, slave = pty.openpty()
+        try:
+            r = subprocess.run([str(SCRIPT), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=slave,
+                               text=True, timeout=10, env=env(hosts), check=False)
+        finally:
+            os.close(slave)
+        err = b""
+        try:
+            while chunk := os.read(master, 4096):
+                err += chunk
+        except OSError:
+            pass
+        os.close(master)
+        return r.stdout, err.decode()
+
+    def test_at_a_terminal_a_dim_line_says_what_the_grade_runs_between_and_what_the_model_chose(self):
+        fake = self.serve(("split", (0.55, 0.0, 0.45)))
+        out, err = self.run_with_terminal_stderr(fake.host, "How severe is it?", "a split report", *NAMED)
+        self.assertEqual(out, "workaround 0.45\n")
+        self.assertIn("\033[2mclassif: 0 is cosmetic, 1 is blocking; the likeliest level is cosmetic, at 55%; "
+                      "-w for all\033[0m", err)
+        out, err = self.run_with_terminal_stderr(fake.host, "How severe is it?", "a split report", *NAMED, "-w")
+        self.assertNotIn("likeliest", err)
 
     def test_a_level_without_a_name_is_named_by_its_text(self):
         fake = self.serve(("Safari", (0.0, 0.1, 0.9)))
@@ -114,9 +146,10 @@ class ScoreTests(unittest.TestCase):
         r = run(fake.host, "How severe is it?", "The export crashes\nonly in Safari", *NAMED, "-w")
         self.assertEqual(r.stdout, "workaround 0.70\n"
                                    "where the probability went, confidence 0.40\n"
-                                   "  0  0.00  cosmetic\n"
-                                   "  1  0.60  workaround\n"
-                                   "  2  0.40  blocking\n"
+                                   "  grade  chance  level\n"
+                                   "   0.00      0%  cosmetic\n"
+                                   "   0.50     60%  workaround\n"
+                                   "   1.00     40%  blocking\n"
                                    "why: the lines whose removal moves the grade most\n"
                                    "  +0.200  only in Safari\n")
 
@@ -244,9 +277,10 @@ class EachScoreTests(unittest.TestCase):
         fake = self.serve(("GPL", (0.0, 0.1, 0.9)))
         r = run(fake.host, "each", "How restrictive?", "GPL terms", "other", *NAMED, "-w")
         self.assertIn("where the probability went for GPL terms, confidence 0.85\n"
-                      "  0  0.00  cosmetic\n"
-                      "  1  0.10  workaround\n"
-                      "  2  0.90  blocking\n", r.stdout)
+                      "  grade  chance  level\n"
+                      "   0.00      0%  cosmetic\n"
+                      "   0.50     10%  workaround\n"
+                      "   1.00     90%  blocking\n", r.stdout)
 
 
 if __name__ == "__main__":

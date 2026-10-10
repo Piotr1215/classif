@@ -376,19 +376,25 @@ def score_levels(ap, values):
 
 def likeliest_level(p):
     """The level the model gave the most probability, a tie going to the
-    lower: the answer Jev's confidence measures from. The level nearest the
-    score can be one the model barely chose, as when a tail spread over the
-    top levels pulls the score off the likeliest."""
+    lower: the answer Jev's confidence measures from."""
     return max(range(len(p)), key=p.__getitem__)
+
+
+def nearest_level(score, n):
+    """The level a score sits closest to, a half rounding up. The printed
+    word names the printed grade, so the two never disagree; on a split
+    answer it can be a level the model barely chose, which the terminal
+    note and -w show."""
+    return min(n - 1, int(score + 0.5))
 
 
 def score_answer(r, names):
     """judge()'s result over the level digits as Jev's Score answer fields,
-    plus the name of the likeliest level and the grade: the score
-    over the top level, so 0 to 1 on any ladder."""
+    plus the grade, the score over the top level, so 0 to 1 on any ladder,
+    and the name of the level nearest it."""
     p = [r["p"][str(i)] for i in range(len(names))]
     score = level_score(p)
-    return {"type": "score", "level": names[likeliest_level(p)], "grade": score / (len(names) - 1),
+    return {"type": "score", "level": names[nearest_level(score, len(names))], "grade": score / (len(names) - 1),
             "score": score,
             "confidence": score_confidence(p), "legend": {str(i): l for i, l in enumerate(names)},
             "probabilities": {str(i): v for i, v in enumerate(p)}}
@@ -649,7 +655,7 @@ class Help(argparse.HelpFormatter):
 
 
 EPILOG = """\
-Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the likeliest level and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a grade is read, 1 for another option or a grade under -t, 2 unscored, 3 insufficient or less sure than -t.
+Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the grade, 0 to 1, and the level nearest it; -j for JSON. Exit: 0 when the first option wins (yes) or a grade is read, 1 for another option or a grade under -t, 2 unscored, 3 insufficient or less sure than -t.
 
 Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
 
@@ -983,11 +989,25 @@ def rounded(v, n=4):
 
 
 def print_levels(head, answer):
-    """Where a Score's probability went: each level's number, p and name,
-    under head and the answer's confidence."""
+    """Where a Score's probability went, under head and the answer's
+    confidence: each level's place on the grade, its chance as a percent
+    and its name. Places and grades are 0 to 1 and chances are percents,
+    so a level's chance is never read as a grade."""
     print(f"{head}, confidence {answer['confidence']:.2f}")
+    print("  grade  chance  level")
+    top = len(answer["probabilities"]) - 1
     for i, v in answer["probabilities"].items():
-        print(f"  {i}  {v:.2f}  {short(answer['legend'][i], 100)}")
+        print(f"  {int(i) / top:5.2f}  {v:6.0%}  {short(answer['legend'][i], 100)}")
+
+
+def grade_note(answer):
+    """The dim line under a grade at a terminal: what 0 and 1 are and the
+    level the model gave the most, so "not 0.29" is not read as 29% sure
+    of not. On stderr only, so a pipe reads LEVEL GRADE alone."""
+    legend, p = answer["legend"], list(answer["probabilities"].values())
+    m = likeliest_level(p)
+    return (f"\033[2m{PROG}: 0 is {short(legend['0'], 40)}, 1 is {short(legend[str(len(p) - 1)], 40)}; "
+            f"the likeliest level is {short(legend[str(m)], 40)}, at {p[m]:.0%}; -w for all\033[0m")
 
 
 def each_main(argv, prog="classif each"):
@@ -1134,7 +1154,7 @@ def main(argv=None, prog="classif"):
                       help="grade the input on a ladder instead of a pick. Alone: not at all, slightly, moderately, "
                            "very, extremely. Or give the levels, low to high, 2 to 10, each name or "
                            "name=description, which the model reads as the situation it means; repeat -s or list "
-                           "them in one -s with commas. Prints the likeliest level and the grade, 0 to 1")
+                           "them in one -s with commas. Prints the grade, 0 to 1, and the level nearest it")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -1311,8 +1331,9 @@ def score_main(a, text, context, labels, names, levels):
     """-s: a Score question, modeled on Jev's Score. One call reads the
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
-    Jev's Score formula. Prints LEVEL GRADE, the likeliest level and the
-    score over the top level, 0 to 1. -t gates on that printed grade, not
+    Jev's Score formula. Prints LEVEL GRADE, the score over the top level,
+    0 to 1, and the level nearest it; at a terminal a dim stderr line says
+    what 0 and 1 are and which level the model gave the most. -t gates on that printed grade, not
     the confidence, so a sure "not urgent" cannot pass -t 0.8 &&. -w adds
     where the probability went, with the confidence, and the lines whose
     removal moves the grade most. Exit 0 scored, 1 under -t, 2 unscored."""
@@ -1352,6 +1373,8 @@ def score_main(a, text, context, labels, names, levels):
         dump(res)
     else:
         print(f"{r['level']} {r['grade']:.2f}")
+        if not a.why and sys.stderr.isatty():
+            print(grade_note(r), file=sys.stderr)
         if a.why:
             print_levels("where the probability went", r)
             print_marks("why", "the grade", marks, unmarked)

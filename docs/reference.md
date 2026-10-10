@@ -89,11 +89,12 @@ classif "How restrictive is this license for third-party code shipped inside a c
   -s "strong-copyleft=the whole program must be shared" -w
 file-copyleft 0.51
 where the probability went, confidence 0.84
-  0  0.01  permissive
-  1  0.07  notice
-  2  0.83  file-copyleft
-  3  0.09  library-copyleft
-  4  0.01  strong-copyleft
+  grade  chance  level
+   0.00      1%  permissive
+   0.25      7%  notice
+   0.50     83%  file-copyleft
+   0.75      9%  library-copyleft
+   1.00      1%  strong-copyleft
 why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 to 60
 ```
 
@@ -102,10 +103,11 @@ classif -i judge.py "how good is this code?" -s
 very 0.81
 ```
 
-- The output is `LEVEL GRADE`: the likeliest level, and the grade, the score over the top level, so 0 to 1 on any ladder. The score is each level's number times its probability, summed, so it runs from 0 to the top level and can land between two. The two can part: 80% on the bottom level with the rest spread over the top ones names the bottom level and grades 0.1, where the level nearest the score is one the model barely chose. `-w` shows where the probability went. A script reads both with `read level grade`; give levels one-word names when it does.
+- The output is `LEVEL GRADE`: the grade, the score over the top level, so 0 to 1 on any ladder, and the level nearest it, a half rounding up. The score is each level's number times its probability, summed, so it runs from 0 to the top level and can land between two. On a split answer the nearest level can be one the model barely chose: 52% on not and 15% on extremely grades 0.29, nearest slightly. A script reads both with `read level grade`; give levels one-word names when it does.
+- At a terminal a dim line on stderr follows, saying what 0 and 1 are and which level the model gave the most, as `classif: 0 is not, 1 is extremely; the likeliest level is not, at 52%; -w for all`. A pipe, a file or `$(...)` never gets it, and `-w` and `-j` print none.
 - The confidence is Jev's Score formula: 1 less the probability-weighted distance from the likeliest level, over the same for an even spread, floored at 0. Probability on a neighbouring level lowers it less than probability at the far end. `-w` and `-j` show it.
 - `-j` carries Jev's answer fields, `type`, `score`, `confidence`, `legend` and `probabilities`, keyed by level number, plus `level` and `grade`, beside `logp`, `mass`, `T`, `model`, `host` and `ms`.
-- `-w` prints where the probability went, one line per level, with the confidence, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the grade most, as `each -w` marks them.
+- `-w` prints where the probability went under the confidence, one line per level: its place on the grade, its chance as a percent and its name, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the grade most, as `each -w` marks them.
 - `-t G` gates on the printed grade: under G the answer exits 1, so `classif "how urgent is this?" -s -t 0.8 && page-me` fires only on a grade of 0.8 or more. The confidence does not gate; read it from `-j` to act on it. `-p` is refused, since a score has no winner to pass the input on. The input must fit the window in one call.
 - `classif each -s` sorts items by grade, highest first, in a `grade level item` table; `-j` items carry `level`, `grade`, `score`, `confidence` and `probabilities`, with the level names once as `legend`, and `-w` adds the top pick's levels to its marks.
 
