@@ -811,9 +811,11 @@ def tag_main(argv, prog="classif tag"):
                     "after the first adds a few generated tokens, not another read. The model writes each "
                     "question's name before its answer, so the answers stay apart; p is raw, with no fitted "
                     "temperature.")
-    ap.add_argument("facets", nargs="+", metavar="NAME=OPTIONS",
+    ap.add_argument("facets", nargs="*", metavar="NAME=OPTIONS",
                     help="a question and its answers, urgency=today,this week,no deadline: the name is what the "
                          "model reads, a word or a whole question; 1 to 9 options, by commas or newlines, plus none")
+    ap.add_argument("-e", "--enum", dest="facets_e", action="append", default=[], metavar="NAME=OPTIONS",
+                    help="a question, as a NAME=OPTIONS argument is; repeat -e for more")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read the text from FILE; repeat -i, or give a.log,b.log, to join several into one text")
     ap.add_argument("-c", "--context", metavar="TEXT",
@@ -823,8 +825,10 @@ def tag_main(argv, prog="classif tag"):
                     help="mark an answer under this p unsure and exit 3")
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS", help="bound the call")
     a = ap.parse_intermixed_args(argv)
+    if not a.facets + a.facets_e:
+        ap.error("ask at least one question: NAME=OPTIONS or -e NAME=OPTIONS")
     facets = []
-    for f in a.facets:
+    for f in a.facets + a.facets_e:
         name, _, rest = f.partition("=")
         opts = [o.strip() for o in re.split(r"[,\n]", rest) if o.strip()]
         if not name.strip() or not opts:

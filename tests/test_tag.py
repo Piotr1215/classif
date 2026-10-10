@@ -43,6 +43,14 @@ class TagTests(unittest.TestCase):
         r = run(fake.host, "tag", URGENCY, KIND, stdin=MAIL)
         self.assertEqual((r.returncode, r.stdout), (0, "urgency  today    0.90\nkind     asks me  0.80\n"))
 
+    def test_e_gives_a_question_as_a_positional_does(self):
+        # classif -e is the habit; tag takes it, alone or beside positionals.
+        for args in (["-e", URGENCY, "-e", KIND], [URGENCY, "-e", KIND]):
+            fake = self.serve(URGENT_ASK)
+            r = run(fake.host, "tag", *args, stdin=MAIL)
+            self.assertEqual((r.returncode, r.stdout), (0, "urgency  today    0.90\nkind     asks me  0.80\n"), args)
+            self.assertEqual(fake.requests[0]["format"]["required"], ["urgency", "kind"], args)
+
     def test_one_request_reads_the_text_once_and_forces_each_question_as_a_key(self):
         fake = self.serve(URGENT_ASK)
         run(fake.host, "tag", URGENCY, KIND, stdin=MAIL)
@@ -175,8 +183,8 @@ class TagTests(unittest.TestCase):
 
     def test_malformed_questions_are_usage_errors_and_call_no_model(self):
         fake = self.serve(URGENT_ASK)
-        for bad in (["urgency"], ["urgency="], ["u=" + ",".join("abcdefghij")], ["u=a,A"], ["u=a,none"],
-                    ["u=a,b", "U=c,d"]):
+        for bad in ([], ["urgency"], ["urgency="], ["u=" + ",".join("abcdefghij")], ["u=a,A"], ["u=a,none"],
+                    ["u=a,b", "U=c,d"], ["-e", "urgency"], ["u=a,b", "-e", "U=c,d"]):
             r = run(fake.host, "tag", *bad, stdin=MAIL)
             self.assertEqual(r.returncode, 2, bad)
             self.assertIn("usage:", r.stderr)
