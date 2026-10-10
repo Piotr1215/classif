@@ -43,6 +43,20 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(J.classif_args(SCORE), ["-s", "permissive", "-s", "notice", "-s", "copyleft",
                                                  "How restrictive?", "-i", "/x/GPL-3"])
 
+    def test_a_score_case_with_its_own_text_passes_it_as_the_input(self):
+        case = {"kind": "score", "question": "How severe?", "text": "Typo in the footer.", "levels": ["minor", "major"]}
+        self.assertEqual(J.classif_args(case), ["-s", "minor", "-s", "major", "How severe?", "Typo in the footer."])
+
+
+class CaseTests(unittest.TestCase):
+    def test_the_authored_score_cases_are_asked_as_scores_with_their_expected_level(self):
+        score = [c for c in J.cases() if c["task"] == "score"]
+        self.assertGreaterEqual(len(score), 40)
+        first = score[0]
+        self.assertEqual((first["kind"], first["id"], first["expect"]), ("score", "severity-1", 0))
+        self.assertIn("Save button", first["text"])
+        self.assertTrue(all(2 <= len(c["levels"]) <= 10 and 0 <= c["expect"] < len(c["levels"]) for c in score))
+
 
 class DistributionTests(unittest.TestCase):
     def test_a_noul_becomes_yes_and_no(self):
@@ -79,6 +93,13 @@ class CompareTests(unittest.TestCase):
                         {"p": {"supported": 0.3, "contradicted": 0.6, "none": 0.1}})
         self.assertEqual((round(row["tv"], 3), row["agree"]), (0.233, True))
         self.assertNotIn("within", row)
+
+
+class ExpectTests(unittest.TestCase):
+    def test_a_side_hits_a_case_when_its_likeliest_level_is_the_one_the_author_expected(self):
+        rows = [{"expect": 2, "jev": {"0": 0.1, "1": 0.2, "2": 0.7}, "classif": {"0": 0.1, "1": 0.6, "2": 0.3}},
+                {"expect": 0, "jev": {"0": 0.9, "1": 0.1}, "classif": {"0": 0.8, "1": 0.2}}, {"jev": {}, "classif": {}}]
+        self.assertEqual((J.hits(rows, "jev"), J.hits(rows, "classif")), (2, 1))
 
 
 class CacheTests(unittest.TestCase):

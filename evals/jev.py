@@ -9,8 +9,9 @@ be trusted, and a prompt, quantization or fine-tune can be judged by whether
 it moves them closer. Each case goes to Jev as its primitive and to the real
 `classif` with MODEL: the synthetic yes/no cases as a Noul (-l yes,no), the
 other synthetic cases as a Choice (-l), SemIf's authored cases as a Choice
-(-e, classif's none dropped and the options renormalized), and the license
-cases as a Score (-s) when /usr/share/common-licenses exists.
+(-e, classif's none dropped and the options renormalized), the authored
+score cases in cases/score.jsonl as a Score (-s), and the license cases as a
+Score when /usr/share/common-licenses exists.
 
 Per case: the total variation between the two distributions (half the summed
 absolute gap: 0 the same, 1 disjoint) and whether the top answer agrees. A
@@ -65,6 +66,11 @@ def cases():
             yield {"task": "choice", "kind": "choice", "question": r["question"], "text": r["state"],
                    "options": [o["id"] for o in r["options"]],
                    "criteria": {o["id"]: o["description"] for o in r["options"]}}
+    with open(os.path.join(HERE, "cases", "score.jsonl")) as fh:
+        for line in fh:
+            r = json.loads(line)
+            yield {"task": "score", "kind": "score", "id": r["id"], "question": r["question"], "text": r["state"],
+                   "levels": r["levels"], "expect": r["expect"]}
     for name in LICENSE_FILES:
         path = os.path.join(LICENSES, name)
         if os.path.exists(path):
@@ -121,7 +127,8 @@ def jev_answer(req, cache, ask=post):
 def classif_args(case):
     """The classif arguments that ask the case as Jev's primitive asks it."""
     if case["kind"] == "score":
-        return [x for level in case["levels"] for x in ("-s", level)] + [case["question"], "-i", case["path"]]
+        levels = [x for level in case["levels"] for x in ("-s", level)]
+        return levels + ([case["question"], "-i", case["path"]] if "path" in case else [case["question"], case["text"]])
     if case["kind"] == "noul" or not any(case["criteria"].values()):
         return ["-l", ",".join(case["options"]), case["question"], case["text"]]
     enum = "\n".join(f"{o}={d}" for o, d in case["criteria"].items())
@@ -165,6 +172,11 @@ def compare(case, jev, ours):
     return row
 
 
+def hits(rows, who):
+    """How many cases with an expected level have it as the likeliest level in row[who]."""
+    return sum(1 for r in rows if "expect" in r and max(r[who], key=r[who].get) == str(r["expect"]))
+
+
 def quantile(xs, q):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else 0.0
@@ -172,7 +184,7 @@ def quantile(xs, q):
 
 def report(model, rows):
     print(f"\n=== {model} against Jev  ({len(rows)} cases)")
-    for task in ["synthetic", "choice", "license", "ALL"]:
+    for task in ["synthetic", "choice", "score", "license", "ALL"]:
         rs = [r for r in rows if (task == "ALL" or r["task"] == task) and "tv" in r]
         missed = sum(1 for r in rows if (task == "ALL" or r["task"] == task) and "tv" not in r)
         if not rs and not missed:
@@ -185,6 +197,9 @@ def report(model, rows):
         if scores:
             line += (f" gap_mean={statistics.mean(r['gap'] for r in scores):.3f} "
                      f"within_sd={sum(r['within'] for r in scores)}/{len(scores)}")
+        expected = [r for r in rs if "expect" in r]
+        if expected:
+            line += f" expected_level jev={hits(expected, 'jev')} classif={hits(expected, 'classif')}/{len(expected)}"
         print(line)
 
 
@@ -205,9 +220,10 @@ def main():
             ours = json.loads(r.stdout)
         except ValueError:
             ours = {"label": None, "unscored": r.stderr.strip()[-200:]}
-        name = os.path.basename(case.get("path", "")) or case["question"][:60]
+        name = case.get("id") or os.path.basename(case.get("path", "")) or case["question"][:60]
         row = {"task": case["task"], "kind": case["kind"], "case": name, "jev": jev_dist(jev, case),
-               "jev_model": jev["model"], "jev_ms": jev["ms"], "ms": ours.get("ms")}
+               "jev_model": jev["model"], "jev_ms": jev["ms"], "ms": ours.get("ms"),
+               **({"expect": case["expect"]} if "expect" in case else {})}
         if "unscored" not in ours:
             row.update({"classif": classif_dist(ours, case), **compare(case, jev, ours)})
         else:

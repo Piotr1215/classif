@@ -244,7 +244,7 @@ evals/tag_eval.py MODEL [HOST]          # tag against one -e call per question, 
 evals/jev.py MODEL [HOST]               # distance from Jev's answers on the same cases; needs TYPESAFE_API_KEY
 ```
 
-`evals/jev.py` asks every case of Jev and of classif as the same primitive: a synthetic yes/no case as a Noul, the other synthetic and the authored cases as a Choice, and the license cases (when `/usr/share/common-licenses` exists) as a Score. Jev is the reference, so a prompt, quantization or fine-tune can be judged by whether it moves classif's distributions closer to Jev's. Per case it reports the total variation between the two distributions (half the summed absolute gap, 0 the same and 1 disjoint) and whether the top answer agrees; for a score, also the gap and whether it sits within Jev's own spread, the standard deviation of its level distribution, at least 0.1 of a level. classif's `none` is dropped from a `-e` answer and the options renormalized. Jev's answers are cached under `~/.local/state/classif/jev` by request, so a rerun calls Jev only for a new or changed case, and stay out of git with the per-case rows.
+`evals/jev.py` asks every case of Jev and of classif as the same primitive: a synthetic yes/no case as a Noul, the other synthetic and the authored cases as a Choice, and the 41 score cases in `evals/cases/score.jsonl` (six domains: bug severity, customer frustration, candidate fit, change risk, email urgency, review comments, each with the level its author expected) and the license cases (when `/usr/share/common-licenses` exists) as a Score. Jev is the reference, so a prompt, quantization or fine-tune can be judged by whether it moves classif's distributions closer to Jev's. Per case it reports the total variation between the two distributions (half the summed absolute gap, 0 the same and 1 disjoint) and whether the top answer agrees; for a score, also the gap and whether it sits within Jev's own spread, the standard deviation of its level distribution, at least 0.1 of a level. classif's `none` is dropped from a `-e` answer and the options renormalized. Jev's answers are cached under `~/.local/state/classif/jev` by request, so a rerun calls Jev only for a new or changed case, and stay out of git with the per-case rows.
 
 The e2e tests run `classif` and its subcommands as a subprocess, each test in its own spec dir and log, through a local proxy that stands in for Ollama. By default the proxy replays `tests/e2e/cassette.json`, so the suite needs no model and no network and runs in about 6 seconds. A request the cassette does not hold fails its test: a changed prompt, option or text needs a new recording. `CLASSIF_E2E=record` forwards to the host and model classif routes to (`CLASSIF_HOSTS=host:port=model` picks one) and rewrites the cassette; `CLASSIF_E2E=live` forwards and keeps nothing. The cassette leaves out timestamps and durations, so two recordings of one model are byte-identical and a new recording diffs only where an answer changed.
 
@@ -269,12 +269,13 @@ The evaluator also reads `rag_set.json` and `email_set.json` from `~/.local/stat
 
 Paired: 7 won, 3 lost, 95% bootstrap interval for the accuracy gain -0.6 to +2.9 points.
 
-2026-10-10, `jev.py`, 170 cases, `winnow:12b-q4_K_M` against `jev-1.13.0`.
+2026-10-10, `jev.py`, 211 cases, `winnow:12b-q4_K_M` against `jev-1.13.0`.
 
 | Task | Top answer agrees | Mean / median TV | TV at most 0.1 | Score within Jev's spread |
 | --- | ---: | ---: | ---: | ---: |
 | synthetic (15) | 15/15 | 0.033 / 0.034 | 15/15 | |
 | choice (144) | 140/144 | 0.058 / 0.011 | 130/144 | |
+| score (41) | 38/41 | 0.063 / 0.007 | 37/41 | 39/41, mean gap 0.06 |
 | license (11) | 10/11 | 0.109 / 0.031 | 8/11 | 10/11, mean gap 0.17 |
 
-Both got 139 of the 144 authored cases right. Of the four where their top answers differ, each matched the label twice; classif's two misses answered `insufficient` where the evidence settled it. The score outside Jev's spread is GFDL-1.3.
+Both got 139 of the 144 authored cases right. Of the four where their top answers differ, each matched the label twice; classif's two misses answered `insufficient` where the evidence settled it. On the score cases Jev's likeliest level matched the author's in 39 of 41 and classif's in 36. Two of classif's misses are candidate fit, one level off in each direction and outside Jev's spread; the third rates a login outage critical where Jev and the author say blocking. In the two cases both missed, Jev and classif agreed with each other against the author. The license outside Jev's spread is GFDL-1.3.
