@@ -92,12 +92,12 @@ printf '%s\n' 'Fix a startup crash.' |
 
 `-e` accepts any number of options and adds `none` when no option fits; past nine, classif asks about each option alone and picks among the three likeliest. Quote descriptions in scripts. Repeated `-i` files, or `-i a,b`, join several sources as one input. A positional input is literal text even when it looks like a filename.
 
-`-s` grades the input on a ladder instead of picking an option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). The question names what is graded; the `-e` options are the levels, low to high, and `-s` says to grade on them. classif prints the level nearest the grade, then the grade on 0 to 1, the probability-weighted score over the top level; at a terminal a dim stderr line says what 0 and 1 are and which level the model chose most. `-s` alone grades a "how X is it?" question from not at all to extremely. `classif each -s` sorts a list by it; see [a score](docs/reference.md#a-score).
+`-s` grades the input on a ladder instead of picking an option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). The question names what is graded, and each `-s` is one level, low to high, as `name` or `name=description` like `-e`. classif prints the level nearest the grade, then the grade on 0 to 1, the probability-weighted score over the top level; at a terminal a dim stderr line says what 0 and 1 are and which level the model chose most. `-s` alone grades a "how X is it?" question from not at all to extremely. `classif each -s` sorts a list by it; see [a score](docs/reference.md#a-score).
 
 ```sh
 ./classif "How restrictive is this license for code shipped in a closed-source product?" -i LICENSE \
-  -e "permissive=nothing to keep or share" -e "notice=keep the copyright notice with copies" \
-  -e "library-copyleft=changes to the library must be shared" -e "strong-copyleft=the whole program must be shared" -s
+  -s "permissive=nothing to keep or share" -s "notice=keep the copyright notice with copies" \
+  -s "library-copyleft=changes to the library must be shared" -s "strong-copyleft=the whole program must be shared"
 notice 0.33
 ./classif -i judge.py "how good is this code?" -s
 very 0.81
@@ -136,7 +136,7 @@ Pick the command by how many questions you ask and how many texts they are about
 
 ```sh
 notmuch show --format=raw id:x |
-  ./classif tag "is it spam?" kind -e "asks me,fyi,newsletter" urgency -e "no deadline,this week,today" -s
+  ./classif tag "is it spam?" kind -e "asks me,fyi,newsletter" urgency -s "no deadline,this week,today"
 ```
 
 `classif each` asks one question of each item in a list, any number of them, and prints them best first; see [one question, many items](docs/reference.md#one-question-many-items).

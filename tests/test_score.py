@@ -1,5 +1,5 @@
-"""-s asks a Score question, modeled on Jev's Score: the -e options as
-ordered levels, low to high, answered in one call as digits 0 to n-1. The score is each level's
+"""-s asks a Score question, modeled on Jev's Score: ordered levels, low to
+high, answered in one call as digits 0 to n-1. The score is each level's
 number times its probability, summed; the confidence is Jev's Score formula,
 which counts how far probability sits from the likeliest level. These tests
 run the real command against a fake Ollama whose level probabilities are set
@@ -15,9 +15,8 @@ from pathlib import Path
 
 from test_judge import SCRIPT, FakeOllama, chat, env, load, run
 
-LEVELS = ["-e", "Cosmetic; no impact\nBroken, but a workaround exists\nBlocking; no workaround", "-s"]
-NAMED = ["-e", "cosmetic=no impact", "-e", "workaround=broken, but a workaround exists", "-e", "blocking=no workaround",
-         "-s"]
+LEVELS = ["-s", "Cosmetic; no impact", "-s", "Broken, but a workaround exists", "-s", "Blocking; no workaround"]
+NAMED = ["-s", "cosmetic=no impact", "-s", "workaround=broken, but a workaround exists", "-s", "blocking=no workaround"]
 
 
 def model(rules, default=(0.2, 0.6, 0.2)):
@@ -122,17 +121,36 @@ class ScoreTests(unittest.TestCase):
 
     def test_levels_may_come_as_one_comma_list_or_as_unquoted_descriptions(self):
         fake = self.serve()
-        run(fake.host, "How severe is it?", "a report", "-e", "low,mid,high", "-s")
-        run(fake.host, "How severe is it?", "a report", "-e", "low=no", "harm", "-e", "high=harm", "-s")
+        run(fake.host, "How severe is it?", "a report", "-s", "low,mid,high")
+        run(fake.host, "How severe is it?", "a report", "-s", "low=no", "harm", "-s", "high=harm")
         self.assertIn("Options: 0=low, 1=mid, 2=high.", fake.requests[0]["messages"][-1]["content"])
         self.assertIn("Options: 0=low (no harm), 1=high (harm).", fake.requests[1]["messages"][-1]["content"])
 
-    def test_commas_split_levels_as_they_split_e_options_whatever_the_order_of_e_and_s(self):
+    def test_one_s_splits_on_commas_even_when_a_level_has_several_words_wherever_it_stands(self):
         fake = self.serve()
-        run(fake.host, "How positive is it?", "a comment", "-e", "meh,encouraging,very positive", "-s")
-        run(fake.host, "How positive is it?", "a comment", "-s", "-e", "meh,encouraging,very positive")
+        run(fake.host, "How positive is it?", "a comment", "-s", "meh,encouraging,very positive")
+        run(fake.host, "-s", "meh,encouraging,very positive", "How positive is it?", "a comment")
         for req in fake.requests:
             self.assertIn("Options: 0=meh, 1=encouraging, 2=very positive.", req["messages"][-1]["content"])
+
+    def test_levels_after_the_question_leave_the_piped_text_as_the_input(self):
+        fake = self.serve()
+        r = run(fake.host, "How severe is it?", "-s", "low,mid,high", stdin="The export crashes in Safari")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Text:\nThe export crashes in Safari", fake.requests[0]["messages"][-1]["content"])
+
+    def test_a_bare_s_takes_no_argument_without_a_comma_so_the_question_stays_the_question(self):
+        fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
+        r = run(fake.host, "-s", "How good is this code?", "some code")
+        self.assertEqual((r.returncode, r.stdout), (0, "very 0.75\n"))
+        self.assertIn("How good is this code? Options: 0=not at all", fake.requests[0]["messages"][-1]["content"])
+
+    def test_a_level_ending_in_a_question_mark_is_refused_as_a_question_taken_for_levels(self):
+        fake = self.serve()
+        r = run(fake.host, "-s", "how likely is rain, really?", stdin="a forecast")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("put the question before -s", r.stderr)
+        self.assertEqual(fake.requests, [])
 
     def test_json_carries_jevs_answer_fields(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
@@ -171,19 +189,29 @@ class ScoreTests(unittest.TestCase):
 
     def test_s_needs_2_to_10_levels(self):
         fake = self.serve()
-        for levels in (["-e", "only"], [x for i in range(11) for x in ("-e", f"level {i}")]):
-            r = run(fake.host, "How severe?", "text", *levels, "-s")
+        for levels in (["-s", "only=the one level"], [x for i in range(11) for x in ("-s", f"level {i}")],
+                       ["-s", ",".join("abcdefghijk")]):
+            r = run(fake.host, "How severe?", "text", *levels)
             self.assertEqual(r.returncode, 2)
-            self.assertIn("-s grades on 2 to 10 -e levels", r.stderr)
+            self.assertIn("-s needs 2 to 10 levels", r.stderr)
         self.assertEqual(fake.requests, [])
 
     def test_one_level_is_told_that_the_question_names_what_is_graded(self):
         fake = self.serve()
-        r = run(fake.host, "How useful is it?", "text", "-e", "usefulness", "-s")
+        r = run(fake.host, "How useful is it?", "text", "-s", "usefulness")
         self.assertEqual(r.returncode, 2)
-        self.assertIn("-e low,mid,high -s", r.stderr)
+        self.assertIn("-s low,mid,high", r.stderr)
         self.assertIn("-s alone grades from not at all to extremely", r.stderr)
         self.assertIn("what they grade goes in the question", r.stderr)
+
+    def test_a_word_after_a_bare_s_is_refused_not_graded_in_place_of_the_input(self):
+        fake = self.serve()
+        r = run(fake.host, "How urgent is it?", "-s", "urgency", stdin="Prod is down.")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("'urgency' after it would be the text", r.stderr)
+        r = run(fake.host, "each", "How urgent?", "-s", "urgency", "a", "b")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(fake.requests, [])
 
     def test_alone_s_grades_on_the_default_ladder(self):
         fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
@@ -191,12 +219,6 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, "very 0.75\n"))
         self.assertIn("How good is this code? Options: 0=not at all, 1=slightly, 2=moderately, 3=very, "
                       "4=extremely.", fake.requests[0]["messages"][-1]["content"])
-
-    def test_s_before_the_question_takes_no_value_so_the_question_stays_the_question(self):
-        fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
-        r = run(fake.host, "-s", "How good is this code?", "some code")
-        self.assertEqual((r.returncode, r.stdout), (0, "very 0.75\n"))
-        self.assertIn("How good is this code? Options: 0=not at all", fake.requests[0]["messages"][-1]["content"])
 
     def test_alone_s_before_another_option_takes_no_level(self):
         fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
@@ -206,12 +228,15 @@ class ScoreTests(unittest.TestCase):
 
     def test_level_names_must_differ(self):
         fake = self.serve()
-        r = run(fake.host, "How severe?", "text", "-e", "low=a", "-e", "Low=b", "-s")
+        r = run(fake.host, "How severe?", "text", "-s", "low=a", "-s", "Low=b")
         self.assertEqual(r.returncode, 2)
         self.assertEqual(fake.requests, [])
 
-    def test_s_refuses_p(self):
+    def test_s_refuses_e_and_p(self):
         fake = self.serve()
+        r = run(fake.host, "How severe?", "text", "-e", "a,b", "-s")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("-s a,b", r.stderr)
         r = run(fake.host, "How severe?", "text", *LEVELS, "-p")
         self.assertEqual(r.returncode, 2)
         self.assertIn("-p", r.stderr)

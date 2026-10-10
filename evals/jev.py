@@ -137,8 +137,7 @@ def jev_answer(req, cache, ask=post):
 def classif_args(case):
     """The classif arguments that ask the case as Jev's primitive asks it."""
     if case["kind"] == "score":
-        # One level per line: a level's own commas stay in it, as with the choice's options.
-        levels = ["-e", "\n".join(case["levels"]), "-s"]
+        levels = [x for level in case["levels"] for x in ("-s", level)]
         return levels + ([case["question"], "-i", case["path"]] if "path" in case else [case["question"], case["text"]])
     if case["kind"] == "noul" or not any(case["criteria"].values()):
         return ["-l", ",".join(case["options"]), case["question"], case["text"]]

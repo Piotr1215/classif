@@ -1,7 +1,7 @@
 """classif tag asks several questions about one text in one call: the grammar
 writes each question's name as a JSON key, the model the digit after it, and
 each digit's top_logprobs score that question. A positional starts a
-question; the -e and -s after it are its own. These tests run the real
+question; the -e or -s after it is its own. These tests run the real
 command against a fake Ollama; no model, no network."""
 import json
 import math
@@ -62,27 +62,29 @@ class TagTests(unittest.TestCase):
         self.assertIn("is it spam?: Options: 1=yes, 2=no, 0=unknown.", req["messages"][-1]["content"])
         self.assertEqual(req["format"]["properties"]["is it spam?"]["enum"], [1, 2, 0])
 
-    def test_s_grades_a_question_on_its_e_levels_and_prints_level_and_grade(self):
+    def test_s_grades_a_question_on_its_levels_and_prints_level_and_grade(self):
         # Score 2 * 0.6 + 1 * 0.4 = 1.6 over a top level of 2: grade 0.80, nearest today.
         fake = self.serve(keyed('{"', "how urgent?", '":', ("2", {"2": 0.6, "1": 0.4}),
                                 ',"', "spam?", '":', ("2", {"2": 0.9, "1": 0.1}), "}"))
-        r = run(fake.host, "tag", "how urgent?", "-e", "later,this week,today", "-s", "spam?", stdin=MAIL)
+        r = run(fake.host, "tag", "how urgent?", "-s", "later,this week,today", "spam?", stdin=MAIL)
         self.assertEqual((r.returncode, r.stdout), (0, "how urgent?  today  0.80\nspam?        no     0.90\n"))
         req = fake.requests[0]
         self.assertIn("how urgent?: Options: 0=later, 1=this week, 2=today.", req["messages"][-1]["content"])
         self.assertEqual(req["format"]["properties"]["how urgent?"]["enum"], [0, 1, 2])
 
-    def test_s_before_its_e_and_s_alone_grade_as_in_classif(self):
+    def test_a_bare_s_grades_on_the_built_in_scale_and_leaves_the_next_question_alone(self):
         fake = self.serve(keyed('{"', "how urgent?", '":', ("0", {"0": 1.0}),
-                                ',"', "how polite?", '":', ("4", {"4": 1.0}), "}"))
-        r = run(fake.host, "tag", "how urgent?", "-s", "-e", "later,today", "how polite?", "-s", stdin=MAIL)
-        self.assertEqual(r.stdout, "how urgent?  later      0.00\nhow polite?  extremely  1.00\n")
+                                ',"', "how polite?", '":', ("4", {"4": 1.0}),
+                                ',"', "spam?", '":', ("1", {"1": 1.0}), "}"))
+        r = run(fake.host, "tag", "how urgent?", "-s", "later,today", "how polite?", "-s", "spam?", stdin=MAIL)
+        self.assertEqual(r.stdout, "how urgent?  later      0.00\nhow polite?  extremely  1.00\n"
+                                   "spam?        yes        1.00\n")
         self.assertIn("how polite?: Options: 0=not at all, 1=slightly, 2=moderately, 3=very, 4=extremely.",
                       fake.requests[0]["messages"][-1]["content"])
 
     def test_json_carries_a_graded_questions_score_fields(self):
         fake = self.serve(keyed('{"', "how urgent?", '":', ("2", {"2": 0.6, "1": 0.4}), "}"))
-        d = json.loads(run(fake.host, "tag", "-j", "how urgent?", "-e", "later,this week,today", "-s",
+        d = json.loads(run(fake.host, "tag", "-j", "how urgent?", "-s", "later,this week,today",
                            stdin=MAIL).stdout)
         t = d["tags"]["how urgent?"]
         self.assertEqual((t["label"], t["level"], t["legend"]), ("today", "today",
@@ -238,8 +240,8 @@ class TagTests(unittest.TestCase):
     def test_malformed_questions_are_usage_errors_and_call_no_model(self):
         fake = self.serve(URGENT_ASK)
         for bad in ([], ["-e", "a,b", "u"], ["-s", "u"], ["u", "-e", ",".join("abcdefghij")], ["u", "-e", "a,A"],
-                    ["u", "-e", "a,none"], ["u", "U"], ["u", "-e", "only", "-s"],
-                    ["u", "-e", ",".join("abcdefghijk"), "-s"]):
+                    ["u", "-e", "a,none"], ["u", "U"], ["u", "-s", "only=the one level"],
+                    ["u", "-s", ",".join("abcdefghijk")], ["u", "-e", "a,b", "-s", "c,d"]):
             r = run(fake.host, "tag", *bad, stdin=MAIL)
             self.assertEqual(r.returncode, 2, bad)
             self.assertIn("usage:", r.stderr)
