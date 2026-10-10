@@ -90,11 +90,13 @@ A host without a model runs DEFAULT_MODEL; -m overrides both. CLASSIF_TIMEOUT
 CLASSIF_CALIBRATION names another calibration file.
 """
 import argparse
+import functools
 import importlib.util
 import json
 import math
 import os
 import re
+import select
 import socket
 import stat
 import sys
@@ -713,12 +715,36 @@ def enum_labels(ap, values, most=9):
 def piped():
     """Whether stdin is a pipe, file or socket, empty or not. A script's
     empty pipe (git diff with no changes) is an empty input, never a reason
-    to judge -c in its place; a terminal or /dev/null gives nothing."""
+    to judge -c in its place; a terminal, /dev/null or a silent socket gives
+    nothing."""
     try:
         mode = os.fstat(sys.stdin.fileno()).st_mode
     except (OSError, ValueError, AttributeError):
         return False
-    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or stat.S_ISSOCK(mode)
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or stat.S_ISSOCK(mode) and not silent_socket()
+
+
+SOCKET_WAIT = 1.0   # seconds a socket on stdin may send nothing before it is no input
+
+
+@functools.cache
+def silent_socket():
+    """Whether stdin is a socket that sends nothing, not even its end, for
+    SOCKET_WAIT seconds. Claude Code's ! leaves its own socket open on stdin
+    when the command holds a <, even a quoted one, and never writes to it,
+    so reading it waits forever. cmd | classif and ssh hand over a pipe,
+    which is read for as long as cmd takes."""
+    try:
+        fd = sys.stdin.fileno()
+        return stat.S_ISSOCK(os.fstat(fd).st_mode) and not select.select([fd], [], [], SOCKET_WAIT)[0]
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def read_stdin():
+    """stdin's text, or "" from a silent socket. head -c cuts mid-character
+    and binaries are not UTF-8 at all; neither should crash a loop over files."""
+    return "" if silent_socket() else sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
 
 def read_context(ap, value):
@@ -810,7 +836,7 @@ def tag_main(argv, prog="classif tag"):
     if a.files is not None:
         raw = read_files(ap, a.files)[0]
     else:
-        raw = "" if sys.stdin.isatty() else sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        raw = "" if sys.stdin.isatty() else read_stdin()
     if not raw.strip() and context and a.files is None and not piped():
         # Given no input at all, -c is what the questions are asked of.
         raw, context, a.context = context, None, None
@@ -886,7 +912,7 @@ def read_items(ap, texts, files):
             ap.error(f"-i {path}: {e.strerror}")
     if out or not piped():
         return out
-    for line in sys.stdin.buffer.read().decode("utf-8", errors="replace").splitlines():
+    for line in read_stdin().splitlines():
         try:
             obj = json.loads(line)
         except ValueError:
@@ -1179,9 +1205,7 @@ def main(argv=None, prog="classif"):
         raw, files = read_files(ap, a.files)
     elif raw is None or raw == "-":
         if not sys.stdin.isatty():
-            # head -c cuts mid-character and binaries are not UTF-8 at all;
-            # neither should crash a loop over files.
-            raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+            raw = read_stdin()
         elif a.question.strip():
             # At a terminal nothing is piped in, so the question stands alone.
             raw = ""

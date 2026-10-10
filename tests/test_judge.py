@@ -655,6 +655,35 @@ class CliTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("no input: pass a question, a text, or both", r.stderr)
 
+    def run_on_socket(self, hosts, *args, send=None):
+        """stdin is a socket, as Claude Code's ! leaves it when the command
+        holds a <: open and silent, or sending send and closing."""
+        import socket
+        ours, theirs = socket.socketpair()
+        self.addCleanup(ours.close)
+        if send is not None:
+            ours.sendall(send.encode())
+            ours.shutdown(socket.SHUT_WR)
+        try:
+            return subprocess.run([str(SCRIPT), *args], stdin=theirs.fileno(), capture_output=True, text=True,
+                                  timeout=10, env=env(hosts), check=False)
+        finally:
+            theirs.close()
+
+    def test_a_socket_on_stdin_that_stays_silent_is_no_input(self):
+        fake = self.serve(chat([("3", -0.05)]))
+        r = self.run_on_socket(fake.host, "-e", "Robert,Scundler,Baggins", "what is frodo's <real> surname?")
+        self.assertEqual((r.returncode, r.stdout), (1, "Baggins 1.00\n"))
+        self.assertTrue(fake.requests[0]["messages"][1]["content"].startswith("what is frodo's <real> surname?"))
+        r = self.run_on_socket(fake.host, "-e", "hook", "q?", "-c", "PreToolUse matcher")
+        self.assertTrue(fake.requests[1]["messages"][1]["content"].startswith("Text:\nPreToolUse matcher\n"))
+
+    def test_a_socket_that_sends_text_is_the_input(self):
+        fake = self.serve(chat([("1", -0.05)]))
+        r = self.run_on_socket(fake.host, "-e", "hook", "q?", send="PreToolUse matcher")
+        self.assertEqual(r.stdout, "hook 1.00\n")
+        self.assertTrue(fake.requests[0]["messages"][1]["content"].startswith("Text:\nPreToolUse matcher\n"))
+
     def test_enum_escapes_to_none_when_no_option_fits(self):
         fake = self.serve(chat([("0", -0.05), ("3", -3.0)]))
         r = run(fake.host, "-e", "Robert,Scundler,Bagginskiskakis", "frodo's real surname?", "x")
