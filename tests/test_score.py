@@ -56,16 +56,16 @@ class ScoreTests(unittest.TestCase):
         self.addCleanup(fake.close)
         return fake
 
-    def test_prints_the_level_nearest_the_score_and_the_score_from_one_call(self):
+    def test_prints_the_level_nearest_the_score_and_the_grade_on_0_to_1_from_one_call(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED)
-        self.assertEqual((r.returncode, r.stdout), (0, "workaround 1.40\n"))
+        self.assertEqual((r.returncode, r.stdout), (0, "workaround 0.70\n"))
         self.assertEqual(len(fake.requests), 1)
 
     def test_a_level_without_a_name_is_named_by_its_text(self):
         fake = self.serve(("Safari", (0.0, 0.1, 0.9)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *LEVELS)
-        self.assertEqual(r.stdout, "Blocking; no workaround 1.90\n")
+        self.assertEqual(r.stdout, "Blocking; no workaround 0.95\n")
 
     def test_the_levels_reach_the_model_as_digits_low_to_high(self):
         fake = self.serve()
@@ -92,26 +92,27 @@ class ScoreTests(unittest.TestCase):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *LEVELS, "-j")
         out = json.loads(r.stdout)
-        self.assertEqual({k: out[k] for k in ("type", "level", "score", "confidence", "legend", "probabilities")}, {
-            "type": "score", "level": "Broken, but a workaround exists", "score": 1.4, "confidence": 0.4,
+        self.assertEqual({k: out[k] for k in ("type", "level", "grade", "score", "confidence", "legend",
+                                              "probabilities")}, {
+            "type": "score", "level": "Broken, but a workaround exists", "grade": 0.7, "score": 1.4, "confidence": 0.4,
             "legend": {"0": "Cosmetic; no impact", "1": "Broken, but a workaround exists", "2": "Blocking; no workaround"},
             "probabilities": {"0": 0.0, "1": 0.6, "2": 0.4}})
 
     def test_why_shows_where_the_probability_went_and_the_lines_that_moved_the_score(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)), default=(0.2, 0.6, 0.2))
         r = run(fake.host, "How severe is it?", "The export crashes\nonly in Safari", *NAMED, "-w")
-        self.assertEqual(r.stdout, "workaround 1.40\n"
+        self.assertEqual(r.stdout, "workaround 0.70\n"
                                    "where the probability went, confidence 0.40\n"
                                    "  0  0.00  cosmetic\n"
                                    "  1  0.60  workaround\n"
                                    "  2  0.40  blocking\n"
-                                   "why: the lines whose removal moves the score most\n"
-                                   "  +0.400  only in Safari\n")
+                                   "why: the lines whose removal moves the grade most\n"
+                                   "  +0.200  only in Safari\n")
 
     def test_under_t_the_confidence_is_unsure_and_exits_3(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED, "-t", "0.5")
-        self.assertEqual((r.returncode, r.stdout), (3, "workaround 1.40 unsure\n"))
+        self.assertEqual((r.returncode, r.stdout), (3, "workaround 0.70 unsure\n"))
 
     def test_s_needs_2_to_10_levels(self):
         fake = self.serve()
@@ -126,7 +127,21 @@ class ScoreTests(unittest.TestCase):
         r = run(fake.host, "How useful is it?", "text", "-s", "usefulness")
         self.assertEqual(r.returncode, 2)
         self.assertIn("-s low,mid,high", r.stderr)
+        self.assertIn("-s alone grades from not at all to extremely", r.stderr)
         self.assertIn("what they grade goes in the question", r.stderr)
+
+    def test_alone_s_grades_on_the_default_ladder(self):
+        fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
+        r = run(fake.host, "How good is this code?", "some code", "-s")
+        self.assertEqual((r.returncode, r.stdout), (0, "very 0.75\n"))
+        self.assertIn("How good is this code? Options: 0=not at all, 1=slightly, 2=moderately, 3=very, "
+                      "4=extremely.", fake.requests[0]["messages"][-1]["content"])
+
+    def test_alone_s_before_another_option_takes_no_level(self):
+        fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
+        out = json.loads(run(fake.host, "How good is this code?", "some code", "-s", "-j").stdout)
+        self.assertEqual((out["level"], out["grade"], out["score"]), ("very", 0.75, 3.0))
+        self.assertEqual(out["legend"]["0"], "not")
 
     def test_level_names_must_differ(self):
         fake = self.serve()
@@ -184,17 +199,26 @@ class EachScoreTests(unittest.TestCase):
         fake = self.serve(("GPL", (0.0, 0.1, 0.9)), ("MIT", (0.9, 0.1, 0.0)))
         r = run(fake.host, "each", "How restrictive?", "MIT terms", "GPL terms", "other", *NAMED)
         self.assertEqual(r.returncode, 0)
-        self.assertEqual(r.stdout, "score  level       item\n"
-                                   "1.90   blocking    GPL terms\n"
-                                   "1.00   workaround  other\n"
-                                   "0.10   cosmetic    MIT terms\n")
+        self.assertEqual(r.stdout, "grade  level       item\n"
+                                   "0.95   blocking    GPL terms\n"
+                                   "0.50   workaround  other\n"
+                                   "0.05   cosmetic    MIT terms\n")
+
+    def test_alone_s_ranks_items_on_the_default_ladder(self):
+        fake = FakeOllama(model([("GPL", (0.0, 0.0, 0.0, 0.0, 1.0))], default=(1.0, 0.0, 0.0, 0.0, 0.0)))
+        self.addCleanup(fake.close)
+        r = run(fake.host, "each", "How restrictive?", "MIT terms", "GPL terms", "-s")
+        self.assertEqual(r.stdout, "grade  level      item\n"
+                                   "1.00   extremely  GPL terms\n"
+                                   "0.00   not        MIT terms\n")
 
     def test_json_items_carry_score_confidence_and_probabilities(self):
         fake = self.serve(("GPL", (0.0, 0.1, 0.9)))
         r = run(fake.host, "each", "How restrictive?", "GPL terms", *NAMED, "-j")
         out = json.loads(r.stdout)
         self.assertEqual(out["legend"], {"0": "cosmetic", "1": "workaround", "2": "blocking"})
-        self.assertEqual(out["items"][0], {"name": "GPL terms", "level": "blocking", "score": 1.9, "confidence": 0.85,
+        self.assertEqual(out["items"][0], {"name": "GPL terms", "level": "blocking", "grade": 0.95, "score": 1.9,
+                                           "confidence": 0.85,
                                            "probabilities": {"0": 0.0, "1": 0.1, "2": 0.9}})
 
     def test_why_shows_where_the_top_picks_probability_went(self):

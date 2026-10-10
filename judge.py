@@ -140,6 +140,10 @@ GRACE = 0.3
 CALIBRATION = os.path.join(os.path.dirname(os.path.realpath(__file__)), "calibration.json")
 DEFAULT_QUESTION = "Which one fits this text?"
 DEFAULT_LABELS = "yes,no,unknown"
+# -s alone: the ladder a "how X is it?" question grades on, as the names the
+# output carries and the text the model reads.
+DEFAULT_LADDER = (["not", "slightly", "moderately", "very", "extremely"],
+                  ["not at all", "slightly", "moderately", "very", "extremely"])
 PROG = "classif"    # the name messages carry
 # A whole read is prompt evaluation: 153k chars that fit the window took
 # gemma4:12b 14.8s here, a hair under CLASSIF_TIMEOUT's default.
@@ -350,12 +354,16 @@ def level_options(values):
 def score_levels(ap, values):
     """-s's levels as (labels, names, levels): the digits 0 to n-1 the model
     answers with, low to high, the names the output carries and the text the
-    model reads. Digits are one token each, so at most 10."""
-    opts = [o.partition("=") for o in level_options(values)]
+    model reads. -s alone gives DEFAULT_LADDER. Digits are one token each,
+    so at most 10."""
+    opts = [o.partition("=") for o in level_options(v for v in values if v)]
+    if not opts:
+        names, levels = DEFAULT_LADDER
+        return [str(i) for i in range(len(names))], list(names), list(levels)
     names = [n.strip() for n, _, _ in opts]
     if not 2 <= len(names) <= 10:
-        ap.error(f"-s needs 2 to 10 levels, low to high, e.g. -s low,mid,high; what they grade goes in the "
-                 f"question, got {len(names)}")
+        ap.error(f"-s needs 2 to 10 levels, low to high, e.g. -s low,mid,high; -s alone grades from not at all "
+                 f"to extremely; what they grade goes in the question, got {len(names)}")
     if not all(names) or len({n.lower() for n in names}) != len(names):
         ap.error(f"-s needs distinct named levels, got {', '.join(names)}")
     levels = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
@@ -369,10 +377,12 @@ def nearest_level(score, n):
 
 def score_answer(r, names):
     """judge()'s result over the level digits as Jev's Score answer fields,
-    plus the name of the level nearest the score."""
+    plus the name of the level nearest the score and the grade: the score
+    over the top level, so 0 to 1 on any ladder."""
     p = [r["p"][str(i)] for i in range(len(names))]
     score = level_score(p)
-    return {"type": "score", "level": names[nearest_level(score, len(names))], "score": score,
+    return {"type": "score", "level": names[nearest_level(score, len(names))], "grade": score / (len(names) - 1),
+            "score": score,
             "confidence": score_confidence(p), "legend": {str(i): l for i, l in enumerate(names)},
             "probabilities": {str(i): v for i, v in enumerate(p)}}
 
@@ -632,7 +642,7 @@ class Help(argparse.HelpFormatter):
 
 
 EPILOG = """\
-Output: LABEL P, the winner and its probability; with -s, LEVEL SCORE, the level nearest the score and the score; -j for JSON. Exit: 0 when the first option wins (yes) or a score is read, 1 for another option, 2 unscored, 3 insufficient or below -t.
+Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the level nearest the grade and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a score is read, 1 for another option, 2 unscored, 3 insufficient or below -t.
 
 Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
 
@@ -905,19 +915,19 @@ def short(s, n=60):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def mark_lines(ask, text, context, base):
+def mark_lines(ask, text, context, base, key="score"):
     """(marks, why unmarked): the MARKS lines of text and context whose
-    removal moves ask()'s score from base by MARK_MIN or more, the largest
-    move first, each asked again without its line; or (None, why) when
-    neither has a line count without_each_line marks."""
+    removal moves ask()'s key, its score unless named, from base by MARK_MIN
+    or more, the largest move first, each asked again without its line; or
+    (None, why) when neither has a line count without_each_line marks."""
     cut = without_each_line(text, context)
     if cut is None:
         return None, f"its text has under 2 or over {MARK_LINES} lines and there is no -c of 1 to {MARK_LINES}"
     marks = []
     for source, line, t, ctx in cut:
         r = ask(t, ctx)
-        if r["label"] is not None and abs(base - r["score"]) >= MARK_MIN:
-            marks.append({"from": source, "line": line, "delta": round(base - r["score"], 4)})
+        if r["label"] is not None and abs(base - r[key]) >= MARK_MIN:
+            marks.append({"from": source, "line": line, "delta": round(base - r[key], 4)})
     return sorted(marks, key=lambda m: -abs(m["delta"]))[:MARKS], None
 
 
@@ -958,7 +968,7 @@ def each_main(argv, prog="classif each"):
         usage="%(prog)s [options] QUESTION ITEM ...\n       cmd | %(prog)s [options] QUESTION\n"
               "       %(prog)s [options] QUESTION -i FILE ...",
         description="Ask one question of each item and sort them, best first: by p(yes), with -e by p of "
-                    "the first option, with -s by score. Each item is its own call, so a list of any length works; a model answers one "
+                    "the first option, with -s by grade. Each item is its own call, so a list of any length works; a model answers one "
                     "question about one text well and picks among many poorly.")
     ap.add_argument("question", metavar="QUESTION", help="a yes/no question, or with -e the question the options answer")
     ap.add_argument("texts", nargs="*", metavar="ITEM", help="an item as text, one per argument")
@@ -966,9 +976,9 @@ def each_main(argv, prog="classif each"):
     pick.add_argument("-e", "--enum", action="append", metavar="OPTION",
                       help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
                            "option is the one items sort by")
-    pick.add_argument("-s", "--score", dest="levels", action="append", metavar="LEVEL",
-                      help="a level of the ladder the question grades on, as in classif -s: low to high, 2 to 10, "
-                           "name or name=description. Items sort by score, highest first")
+    pick.add_argument("-s", "--score", dest="levels", action="append", nargs="?", const="", metavar="LEVEL",
+                      help="grade each item on a ladder, as in classif -s: alone, not at all to extremely, or levels "
+                           "low to high, name or name=description. Items sort by grade, highest first")
     ap.add_argument("-c", "--context", metavar="TEXT",
                     help="background read before every item, such as goals: a file, <(cmd) or the text itself. "
                          "With no items, it is the one judged")
@@ -1040,12 +1050,13 @@ def each_main(argv, prog="classif each"):
     scored.sort(key=lambda row: -row["score"])
     top = scored[0]
     if a.why:
-        marks, unmarked = mark_lines(ask, top["text"], context, top["score"])
+        key = "grade" if levels else "score"
+        marks, unmarked = mark_lines(ask, top["text"], context, top[key], key)
         top.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
     shown = scored[:a.top] if a.top else scored
 
     if a.json:
-        keep = ("level", "score", "confidence", "probabilities") if levels else ("score", "label", "p")
+        keep = ("level", "grade", "score", "confidence", "probabilities") if levels else ("score", "label", "p")
         rows = [{"name": row["name"], **{k: rounded(row[k]) for k in keep},
                  **{k: row[k] for k in ("marks", "unmarked") if k in row}} for row in shown]
         dump({"question": a.question, **({"options": names[:-1]} if names else {}),
@@ -1054,8 +1065,8 @@ def each_main(argv, prog="classif each"):
               **({"unscored": missed} if missed else {}), "model": model, "host": host})
         return 0
     if levels:
-        table = [["score", "level", "item"]] + [
-            [f"{row['score']:.2f}", row["level"], short(row["name"])] for row in shown]
+        table = [["grade", "level", "item"]] + [
+            [f"{row['grade']:.2f}", row["level"], short(row["name"])] for row in shown]
     else:
         table = [[f"p({first})", "answer", "item"]] + [
             [f"{row['score']:.3f}", f"{row['label']} {row['p'][row['label']]:.3f}", short(row["name"])] for row in shown]
@@ -1065,7 +1076,7 @@ def each_main(argv, prog="classif each"):
     if a.why:
         if levels:
             print_levels(f"\nwhere the probability went for {short(top['name'])}", top)
-        print_marks(f"{'' if levels else chr(10)}why {short(top['name'])}", "the score" if levels else f"p({first})",
+        print_marks(f"{'' if levels else chr(10)}why {short(top['name'])}", "the grade" if levels else f"p({first})",
                     top.get("marks"), top.get("unmarked"))
     return 0
 
@@ -1088,11 +1099,11 @@ def main(argv=None, prog="classif"):
                       help="an answer to pick: name, or name=description, which the model reads as when to pick it. "
                            "Repeat -e or list names with commas; plus none. Past 9, each is first asked alone and the "
                            "3 likeliest picked among. Without -e: yes, no, unknown")
-    pick.add_argument("-s", "--score", dest="levels", action="append", metavar="LEVEL",
-                      help="a level of the ladder the question grades on, instead of a pick: low to high, 2 to 10, "
-                           "name or name=description, which the model reads as the situation it means. Repeat -s "
-                           "or list names with commas. Prints the level nearest the score and the score, 0 to the "
-                           "top level")
+    pick.add_argument("-s", "--score", dest="levels", action="append", nargs="?", const="", metavar="LEVEL",
+                      help="grade the input on a ladder instead of a pick. Alone: not at all, slightly, moderately, "
+                           "very, extremely. Or give the levels, low to high, 2 to 10, each name or "
+                           "name=description, which the model reads as the situation it means; repeat -s or list "
+                           "names with commas. Prints the level nearest the grade and the grade, 0 to 1")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -1270,10 +1281,10 @@ def score_main(a, text, context, labels, names, levels):
     """-s: a Score question, modeled on Jev's Score. One call reads the
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
-    Jev's Score formula. Prints LEVEL SCORE, the level nearest the score;
-    -t gates on the confidence. -w adds where the probability went, with the
-    confidence, and the lines whose removal moves the score most. Exit 0
-    scored, 2 unscored, 3 under -t."""
+    Jev's Score formula. Prints LEVEL GRADE, the level nearest the score and
+    the score over the top level, 0 to 1; -t gates on the confidence. -w adds
+    where the probability went, with the confidence, and the lines whose
+    removal moves the grade most. Exit 0 scored, 2 unscored, 3 under -t."""
     host, model = route()
     if not host:
         return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
@@ -1293,9 +1304,10 @@ def score_main(a, text, context, labels, names, levels):
     unsure = a.min_p is not None and r["confidence"] < a.min_p
     marks = unmarked = None
     if a.why:
-        marks, unmarked = mark_lines(ask, text, context, r["score"])
+        marks, unmarked = mark_lines(ask, text, context, r["grade"], "grade")
     if a.json:
-        res = {k: rounded(r[k], 3) for k in ("type", "level", "score", "confidence", "legend", "probabilities")}
+        res = {k: rounded(r[k], 3) for k in ("type", "level", "grade", "score", "confidence", "legend",
+                                              "probabilities")}
         res.update({"T": r["T"], "logp": rounded(r["logp"], 3), "mass": round(r["mass"], 3), "model": r["model"],
                     "host": r["host"], "ms": r["ms"], "mode": "direct"})
         if r["T"]:
@@ -1308,10 +1320,10 @@ def score_main(a, text, context, labels, names, levels):
             res.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
         dump(res)
     else:
-        print(f"{r['level']} {r['score']:.2f}" + (" unsure" if unsure else ""))
+        print(f"{r['level']} {r['grade']:.2f}" + (" unsure" if unsure else ""))
         if a.why:
             print_levels("where the probability went", r)
-            print_marks("why", "the score", marks, unmarked)
+            print_marks("why", "the grade", marks, unmarked)
     return 3 if unsure else 0
 
 
