@@ -12,7 +12,7 @@ Short inputs use one whole-input call. A server-confirmed context overflow switc
 
 | Flag | Meaning |
 | --- | --- |
-| `-e OPTION` | An answer to pick: a name, or `name=description`. The model reads the description as when to pick that option; only the name is printed. Repeat `-e` for each option, or list names with commas or newlines. Any number of options, plus `none`; the first exits 0. Past nine, each option is first asked alone (`QUESTION Is the answer NAME (description)?`, yes or no), and the three likeliest, in the order given, go to one pick; see [past nine options](#past-nine-options). A description runs to the next `name=`, so it may hold commas. Unquoted, its words run to the next option or quoted value, so a one-word text goes before `-e`. Without `-e` the answers are `yes`, `no` and `unknown`. |
+| `-e OPTION` | An answer to pick: a name, or `name=description`. The model reads the description as when to pick that option; only the name is printed. Repeat `-e` for each option, or list names with commas or newlines. Any number of options, plus `none`; the first exits 0. Past nine, each option is first asked alone (`QUESTION Is the answer NAME (description)?`, yes or no), and the three likeliest, in the order given, go to one pick; see [past nine options](#past-nine-options). A description runs to the next `name=`, so it may hold commas. Unquoted, its words run to the next option or quoted value, so a one-word text goes before `-e`. Without `-e` the answers are `yes`, `no` and `unknown`. With `-s` the options are levels to grade on; see [a score](#a-score). |
 | `-p` | Print the input unchanged when the first label wins. |
 | `-j` | Print scores and request metadata as JSON. Pipe through `python3 -m json.tool` to indent it. |
 | `-t P` | Exit 3 and mark the result unsure when the winning probability is below P. A pipe gate then passes nothing. |
@@ -81,13 +81,13 @@ Each call is the direct path above with its own timeout; items are judged one af
 
 ## A score
 
-`-s LEVEL` grades the input on a ladder of ordered levels instead of picking one option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). The question names what is graded; each level is one rung, low to high, 2 to 10 of them. A level is `name` or `name=description`, as with `-e`: the output carries the name, and the model reads the description as the situation the level means. Repeat `-s`, or list the levels in one `-s` with commas, `-s "meh,encouraging,very positive"`. Repeated, a level keeps its commas unless every piece is one word, so `-s "broken, but a workaround exists"` stays one level. Describe situations rather than degrees: "broken, but a workaround exists" places a report, "moderately severe" does not. `-s` alone grades a "how X is it?" question on a built-in ladder, not at all, slightly, moderately, very, extremely; its levels are degrees, so it suits a quick grade, and written levels suit a grade that must mean something specific. One call reads the levels as digits 0 to n-1 and answers one; classif reads each level's probability from that token.
+`-s` grades the input instead of picking one option, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). `-e` gives the outcomes either way; `-s` says they are ordered, low to high, and asks for a number. The question names what is graded; each `-e` option is one rung, 2 to 10 of them, with no `none`. They split as any `-e` options do: `-e "meh,encouraging,very positive" -s` is three levels, and a description runs to the next `name=`, so `-e "degraded=broken, but a workaround exists"` is one. The output carries the name, and the model reads the description as the situation the level means. Describe situations rather than degrees: "broken, but a workaround exists" places a report, "moderately severe" does not. `-s` alone grades a "how X is it?" question on a built-in ladder, not at all, slightly, moderately, very, extremely; its levels are degrees, so it suits a quick grade, and written levels suit a grade that must mean something specific. One call reads the levels as digits 0 to n-1 and answers one; classif reads each level's probability from that token.
 
 ```sh
 classif "How restrictive is this license for third-party code shipped inside a closed-source paid product?" \
-  -i /usr/share/common-licenses/MPL-2.0 -s "permissive=nothing to keep or share" -s "notice=keep the copyright notice" \
-  -s "file-copyleft=changes to its files must be shared" -s "library-copyleft=changes to the library must be shared" \
-  -s "strong-copyleft=the whole program must be shared" -w
+  -i /usr/share/common-licenses/MPL-2.0 -e "permissive=nothing to keep or share" -e "notice=keep the copyright notice" \
+  -e "file-copyleft=changes to its files must be shared" -e "library-copyleft=changes to the library must be shared" \
+  -e "strong-copyleft=the whole program must be shared" -s -w
 file-copyleft 0.51
 where the probability went, confidence 0.84
   grade  chance  level
@@ -110,7 +110,7 @@ very 0.81
 - `-j` carries Jev's answer fields, `type`, `score`, `confidence`, `legend` and `probabilities`, keyed by level number, plus `level` and `grade`, beside `logp`, `mass`, `T`, `model`, `host` and `ms`.
 - `-w` prints where the probability went under the confidence, one line per level: its place on the grade, its chance as a percent and its name, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the grade most, as `each -w` marks them.
 - `-t G` gates on the printed grade: under G the answer exits 1, so `classif "how urgent is this?" -s -t 0.8 && page-me` fires only on a grade of 0.8 or more. The confidence does not gate; read it from `-j` to act on it. `-p` is refused, since a score has no winner to pass the input on. The input must fit the window in one call.
-- `classif each -s` sorts items by grade, highest first, in a `grade level item` table; `-j` items carry `level`, `grade`, `score`, `confidence` and `probabilities`, with the level names once as `legend`, and `-w` adds the top pick's levels to its marks.
+- `classif each -s` sorts items by grade, on the `-e` levels or the built-in ladder, highest first, in a `grade level item` table; `-j` items carry `level`, `grade`, `score`, `confidence` and `probabilities`, with the level names once as `legend`, and `-w` adds the top pick's levels to its marks.
 
 Jev reads each level on its own. Asked of the 11 licenses in `/usr/share/common-licenses` and classif's own on six restrictiveness levels, reading each level alone put MIT and Apache-2.0 at "permissive" and averaged 0.44 from Jev's scores, in 2 to 8 s a license; the one-call read averaged 0.12 from Jev's in about 2.2 s, and 0.06 without GFDL-1.3, which Jev spreads over three levels (2026-10-10, `winnow:12b-q4_K_M` against `jev-1.13.0`). A score uses the model's `T_score` from `calibration.json`, else its `T_enum`.
 

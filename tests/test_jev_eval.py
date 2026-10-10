@@ -40,12 +40,12 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(J.classif_args(noul), ["-l", "yes,no", "Is it k8s?", "pod"])
         self.assertEqual(J.classif_args(CHOICE), ["-e", "supported=establishes it\ncontradicted=establishes the opposite",
                                                   "Assess the claim.", "It was not fitted."])
-        self.assertEqual(J.classif_args(SCORE), ["-s", "permissive", "-s", "notice", "-s", "copyleft",
+        self.assertEqual(J.classif_args(SCORE), ["-e", "permissive\nnotice\ncopyleft", "-s",
                                                  "How restrictive?", "-i", "/x/GPL-3"])
 
     def test_a_score_case_with_its_own_text_passes_it_as_the_input(self):
         case = {"kind": "score", "question": "How severe?", "text": "Typo in the footer.", "levels": ["minor", "major"]}
-        self.assertEqual(J.classif_args(case), ["-s", "minor", "-s", "major", "How severe?", "Typo in the footer."])
+        self.assertEqual(J.classif_args(case), ["-e", "minor\nmajor", "-s", "How severe?", "Typo in the footer."])
 
 
 class CaseTests(unittest.TestCase):

@@ -333,41 +333,19 @@ def score_confidence(p):
     return max(0.0, 1 - sum(v * abs(i - m) for i, v in enumerate(p)) / even)
 
 
-def level_options(values):
-    """Every -s's levels, low to high, each "name" or "name=description". A
-    value with a newline holds one level per line; one with an = splits as
-    -e does. A lone -s splits on commas, since one level is no ladder, so
-    -s "meh,encouraging,very positive" is three. Repeated, commas separate
-    levels only when each is one word, so -s "Broken, but a workaround
-    exists" is one level among the others."""
-    values = list(values)
-    out = []
-    for v in values:
-        pieces = v.split(",")
-        if "\n" in v:
-            out += v.split("\n")
-        elif "=" in v:
-            out += enum_options([v])
-        elif len(values) == 1 or all(len(piece.split()) == 1 for piece in pieces):
-            out += pieces
-        else:
-            out.append(v)
-    return [o.strip() for o in out if o.strip()]
-
-
 def score_levels(ap, values):
     """-s's levels as (labels, names, levels): the digits 0 to n-1 the model
     answers with, low to high, the names the output carries and the text the
-    model reads. -s alone gives DEFAULT_LADDER. Digits are one token each,
-    so at most 10."""
-    opts = [o.partition("=") for o in level_options(v for v in values if v)]
+    model reads. The levels are the -e options, split as -e splits them;
+    without -e, DEFAULT_LADDER. Digits are one token each, so at most 10."""
+    opts = [o.partition("=") for o in enum_options(values or [])]
     if not opts:
         names, levels = DEFAULT_LADDER
         return [str(i) for i in range(len(names))], list(names), list(levels)
     names = [n.strip() for n, _, _ in opts]
     if not 2 <= len(names) <= 10:
-        ap.error(f"-s needs 2 to 10 levels, low to high, e.g. -s low,mid,high; -s alone grades from not at all "
-                 f"to extremely; what they grade goes in the question, got {len(names)}")
+        ap.error(f"-s grades on 2 to 10 -e levels, low to high, e.g. -e low,mid,high -s; -s alone grades from not "
+                 f"at all to extremely; what they grade goes in the question, got {len(names)}")
     if not all(names) or len({n.lower() for n in names}) != len(names):
         ap.error(f"-s needs distinct named levels, got {', '.join(names)}")
     levels = [f"{n} ({d.strip()})" if d.strip() else n for n, (_, _, d) in zip(names, opts)]
@@ -671,7 +649,7 @@ def join_descriptions(argv):
     while i < len(argv):
         out.append(argv[i])
         i += 1
-        if out[-1] in ("-e", "--enum", "-s", "--score") and i < len(argv) and "=" in argv[i] and not re.search(r"\s", argv[i]):
+        if out[-1] in ("-e", "--enum") and i < len(argv) and "=" in argv[i] and not re.search(r"\s", argv[i]):
             words = [argv[i]]
             i += 1
             while i < len(argv) and argv[i] and not argv[i].startswith("-") and not re.search(r"\s", argv[i]):
@@ -1027,13 +1005,12 @@ def each_main(argv, prog="classif each"):
                     "question about one text well and picks among many poorly.")
     ap.add_argument("question", metavar="QUESTION", help="a yes/no question, or with -e the question the options answer")
     ap.add_argument("texts", nargs="*", metavar="ITEM", help="an item as text, one per argument")
-    pick = ap.add_mutually_exclusive_group()
-    pick.add_argument("-e", "--enum", action="append", metavar="OPTION",
-                      help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
-                           "option is the one items sort by")
-    pick.add_argument("-s", "--score", dest="levels", action="append", nargs="?", const="", metavar="LEVEL",
-                      help="grade each item on a ladder, as in classif -s: alone, not at all to extremely, or levels "
-                           "low to high, name or name=description. Items sort by grade, highest first")
+    ap.add_argument("-e", "--enum", action="append", metavar="OPTION",
+                    help="an answer to pick, as in classif -e: name or name=description, plus none. The first "
+                         "option is the one items sort by. With -s, the levels, low to high")
+    ap.add_argument("-s", "--score", action="store_true",
+                    help="grade each item, as in classif -s: on the -e levels, or without -e from not at all to "
+                         "extremely. Items sort by grade, highest first")
     ap.add_argument("-c", "--context", metavar="TEXT",
                     help="background read before every item, such as goals: a file, <(cmd) or the text itself. "
                          "With no items, it is the one judged")
@@ -1048,8 +1025,8 @@ def each_main(argv, prog="classif each"):
     if a.top is not None and a.top < 1:
         ap.error(f"-k wants 1 or more, got {a.top}")
     levels = None
-    if a.levels:
-        (labels, level_names, levels), names, options = score_levels(ap, a.levels), None, None
+    if a.score:
+        (labels, level_names, levels), names, options = score_levels(ap, a.enum), None, None
     elif a.enum:
         labels, names, options = enum_labels(ap, a.enum, most=None)
     else:
@@ -1153,12 +1130,12 @@ def main(argv=None, prog="classif"):
     pick.add_argument("-e", "--enum", action="append", metavar="OPTION",
                       help="an answer to pick: name, or name=description, which the model reads as when to pick it. "
                            "Repeat -e or list names with commas; plus none. Past 9, each is first asked alone and the "
-                           "3 likeliest picked among. Without -e: yes, no, unknown")
-    pick.add_argument("-s", "--score", dest="levels", action="append", nargs="?", const="", metavar="LEVEL",
-                      help="grade the input on a ladder instead of a pick. Alone: not at all, slightly, moderately, "
-                           "very, extremely. Or give the levels, low to high, 2 to 10, each name or "
-                           "name=description, which the model reads as the situation it means; repeat -s or list "
-                           "them in one -s with commas. Prints the grade, 0 to 1, and the level nearest it")
+                           "3 likeliest picked among. Without -e: yes, no, unknown. With -s, the levels, low to "
+                           "high, 2 to 10, and no none")
+    ap.add_argument("-s", "--score", action="store_true",
+                    help="grade the input instead of picking: the -e options are levels, low to high, each "
+                         "described as the situation it means. Without -e: not at all, slightly, moderately, very, "
+                         "extremely. Prints the level nearest the grade and the grade, 0 to 1")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -1187,15 +1164,15 @@ def main(argv=None, prog="classif"):
     given = sys.argv[1:] if argv is None else list(argv)
     joined = join_descriptions(given)
     a = ap.parse_intermixed_args(joined)
-    claim = a.enum is None and a.levels is None and a.labels == DEFAULT_LABELS
+    claim = a.enum is None and not a.score and a.labels == DEFAULT_LABELS
     if a.deadline is not None and a.deadline <= 0:
         ap.error(f"-d wants seconds above 0, got {a.deadline}")
     if a.files is not None and a.input is not None:
         ap.error("got an input argument and -i; pass one of them")
-    if a.levels is not None:
+    if a.score:
         if a.gate:
             ap.error("-p passes the input on when the first option wins, and a score has no winner")
-        score_labels = score_levels(ap, a.levels)
+        score_labels = score_levels(ap, a.enum)
     elif a.why and not claim and a.enum is None:
         ap.error("--why answers the default labels and -e; custom -l labels need one whole read")
     context = read_context(ap, a.context)
@@ -1214,7 +1191,7 @@ def main(argv=None, prog="classif"):
         sys.stdout = sys.stderr
 
     names = options = None
-    if a.enum is not None:
+    if a.enum is not None and not a.score:
         labels, names, options = enum_labels(ap, a.enum, most=None)
         if labels is None and a.why:
             ap.error(f"--why reads the text in pieces, which pick among at most 9 options; got {len(names) - 1}")
@@ -1246,7 +1223,7 @@ def main(argv=None, prog="classif"):
         # pass a policy down a -p gate.
         raw, text, context, a.context = context, context, None, None
 
-    if a.levels is not None:
+    if a.score:
         return score_main(a, text, context, *score_labels)
     t0 = time.monotonic()
     if a.why:
