@@ -62,7 +62,8 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(ev.subprocess, "run", fake):
             rows = ev.rows_for("pairs", "text", qs, {})
         self.assertEqual([c[1:] for c in calls], [["-j", "-e", "x,y", "a?"], ["-j", "-e", "x,y", "b?"],
-                                                  ["tag", "-j", "a?=x,y", "b?=x,y"], ["tag", "-j", "b?=x,y", "a?=x,y"]])
+                                                  ["tag", "-j", "a?", "-e", "x,y", "b?", "-e", "x,y"],
+                                                  ["tag", "-j", "b?", "-e", "x,y", "a?", "-e", "x,y"]])
         self.assertEqual([(r["pos"], r["q"], r["tag"]["label"], r["single"]["label"]) for r in rows],
                          [(1, "a?", "x", "x"), (2, "b?", "y", "x"), (1, "b?", "y", "x"), (2, "a?", "x", "x")])
         self.assertEqual((rows[0]["tag_ms"], rows[0]["single_ms"]), (300, 400))

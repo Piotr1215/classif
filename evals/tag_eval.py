@@ -74,7 +74,7 @@ def call(cmd, text, env):
 
 
 def tag(qs, text, env):
-    return call([CLASS, "tag", "-j", *[f"{q}={','.join(opts)}" for q, opts, _ in qs]], text, env)
+    return call([CLASS, "tag", "-j", *[x for q, opts, _ in qs for x in (q, "-e", ",".join(opts))]], text, env)
 
 
 def single(q, opts, text, env):

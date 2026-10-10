@@ -495,17 +495,19 @@ def judge(question, text, labels, options=None, model=None, host=None, num_ctx=N
 
 def tag_request(facets, text, context=None):
     """System, user and the JSON schema for several questions over one text.
-    facets: [(name, [option, ...])]. The schema makes the grammar write each
-    name as a key before its digit, which keeps the answers apart: with bare
-    digits ("12") the second answer copied the first. On 55 emails, "needs a
-    reply?" asked after "newsletter?" agreed with its own call 16 times
-    bare and 51 times keyed. Each question numbers its options from 1; 0 is
-    none of these, as with -e."""
-    lines = [f"{name}: Options: " + ", ".join(f"{i}={o}" for i, o in enumerate(opts, 1)) + ", 0=none of these."
-             for name, opts in facets]
+    facets: [(name, labels, names, options, graded)], the digits, output
+    names and model-read texts classif gives one question of its kind:
+    1, 2 and 0 for yes, no and unknown, options from 1 with 0 none of these
+    under -e, levels from 0 under -s. The schema makes the grammar write
+    each name as a key before its digit, which keeps the answers apart: with
+    bare digits ("12") the second answer copied the first. On 55 emails,
+    "needs a reply?" asked after "newsletter?" agreed with its own call 16
+    times bare and 51 times keyed."""
+    lines = [f"{name}: Options: " + ", ".join(f"{l}={o}" for l, o in zip(labels, options)) + "."
+             for name, labels, _, options, _ in facets]
     body = (f"Context:\n{context}\n\n" if context else "") + f"Text:\n{text}\n\n"
-    schema = {"type": "object", "required": [n for n, _ in facets],
-              "properties": {n: {"type": "integer", "enum": list(range(1, len(o) + 1)) + [0]} for n, o in facets}}
+    schema = {"type": "object", "required": [f[0] for f in facets],
+              "properties": {f[0]: {"type": "integer", "enum": [int(l) for l in f[1]]} for f in facets}}
     # One line without spaces: pretty-printed, the model spent 28 generated
     # tokens on three questions instead of 15, at about 20 ms each.
     system = "Answer with a JSON object on one line, without spaces, giving each question's option number."
@@ -533,9 +535,10 @@ def answers(steps):
 def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx=NUM_CTX):
     """Several questions over one text in one call, the text read once.
     Returns {tags: {name: {label, p, mass} or {label: None, unscored}}, model,
-    host, ms}, p keyed by option names plus none, or the failed call's
-    {label: None, unscored[, overflow]}. p is raw: no temperature is fitted
-    for an answer read this way."""
+    host, ms}, p keyed by the question's answer names, or the failed call's
+    {label: None, unscored[, overflow]}. A graded question's tag is
+    score_answer's fields, its level as the label. p is raw: no temperature
+    is fitted for an answer read this way."""
     if host is None:
         host, model = route(model)
         if not host:
@@ -546,7 +549,7 @@ def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx
     # the vocabulary lacks is written a byte per token, or as a \u escape, so
     # a key costs at most its ASCII-escaped length, which is never shorter
     # than its UTF-8 bytes: twelve U+20000 took Winnow 57 tokens with kind.
-    budget = 8 + sum(len(json.dumps(n)) + 6 for n, _ in facets)
+    budget = 8 + sum(len(json.dumps(f[0])) + 6 for f in facets)
     resp = chat(host, model, system, user, {"num_predict": budget, "num_ctx": num_ctx}, timeout, format=schema)
     if "unscored" in resp:
         return resp
@@ -558,16 +561,19 @@ def tag(facets, text, model=None, host=None, timeout=None, context=None, num_ctx
     if stopped == "length":
         missing = f"the response stopped at its {tokens}-token budget before this answer"
     tags = {}
-    for name, opts in facets:
+    for name, labels, names, _, graded in facets:
         if name not in found:
             tags[name] = {"label": None, "unscored": missing}
             continue
-        labels = [str(i) for i in range(1, len(opts) + 1)] + ["0"]
         p, mass = score(found[name], labels)
         if mass < MASS_MIN:
             tags[name] = {"label": None, "unscored": f"label mass {mass:.2f} < {MASS_MIN}", "mass": round(mass, 3)}
             continue
-        p = {o: p[l] for l, o in zip(labels, opts + ["none"])}
+        if graded:
+            answer = score_answer({"p": p}, names)
+            tags[name] = {**answer, "label": answer["level"], "mass": mass}
+            continue
+        p = {n: p[l] for l, n in zip(labels, names)}
         tags[name] = {"label": max(p, key=p.get), "p": p, "mass": mass}
     return {"tags": tags, "model": model, "host": host, "ms": resp["ms"], "done_reason": stopped, "tokens": tokens}
 
@@ -773,9 +779,41 @@ def read_files(ap, groups):
 
 
 TAG_EPILOG = """\
-Output: one line per question, NAME ANSWER P; -j for JSON. Exit: 0 when every question is answered, 2 when any is unscored, 3 when any answer is under -t.
+Output: one line per question, QUESTION ANSWER P, or QUESTION LEVEL GRADE when graded; -j for JSON. Exit: 0 when every question is answered, 2 when any is unscored, 3 when any answer is under -t.
 
-    notmuch show --format=raw id:x | classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'"""
+    notmuch show --format=raw id:x | classif tag "is it spam?" "what kind of mail is it?" -e "asks me,fyi,newsletter" \\
+        "how soon must I act?" -e "no deadline,this week,today" -s"""
+TAG_VALUED = ("-e", "--enum", "-i", "--input", "-c", "--context", "-t", "--min-p", "-d", "--deadline")
+
+
+def tag_blocks(argv):
+    """(questions, rest): each question as [text, its -e values, graded], in
+    the order given, and the arguments left for argparse. A positional
+    starts a question; each -e after it adds options and -s grades it, as
+    for classif's one question. argparse cannot do this alone: it keeps no
+    order between positionals and options. An -e or -s before any question
+    stays in rest, for tag_main to refuse."""
+    questions, rest, i = [], [], 0
+    argv = join_descriptions(argv)
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
+        if not arg.startswith("-") or arg == "-":
+            questions.append([arg, [], False])
+            continue
+        flag, value = arg.partition("=")[::2] if arg.startswith("--") else (arg[:2], arg[2:])
+        if flag in ("-s", "--score") and not value and questions:
+            questions[-1][2] = True
+        elif flag in ("-e", "--enum") and questions and (value or i < len(argv)):
+            if not value:
+                value, i = argv[i], i + 1
+            questions[-1][1].append(value)
+        else:
+            rest.append(arg)
+            if flag in TAG_VALUED and not value and i < len(argv):
+                rest.append(argv[i])
+                i += 1
+    return questions, rest
 
 
 def tag_main(argv, prog="classif tag"):
@@ -784,16 +822,22 @@ def tag_main(argv, prog="classif tag"):
     PROG = prog
     ap = argparse.ArgumentParser(
         prog=prog, formatter_class=Help, epilog=TAG_EPILOG,
-        usage="cmd | %(prog)s [options] NAME=OPTIONS ...\n       %(prog)s [options] NAME=OPTIONS ... -i FILE",
-        description="Ask several questions about one text in one call. The text is read once, so each question "
-                    "after the first adds a few generated tokens, not another read. The model writes each "
-                    "question's name before its answer, so the answers stay apart; p is raw, with no fitted "
-                    "temperature.")
-    ap.add_argument("facets", nargs="*", metavar="NAME=OPTIONS",
-                    help="a question and its answers, urgency=today,this week,no deadline: the name is what the "
-                         "model reads, a word or a whole question; 1 to 9 options, by commas or newlines, plus none")
-    ap.add_argument("-e", "--enum", dest="facets_e", action="append", default=[], metavar="NAME=OPTIONS",
-                    help="a question, as a NAME=OPTIONS argument is; repeat -e for more")
+        allow_abbrev=False,
+        usage="cmd | %(prog)s [options] QUESTION [-e OPTION]... [-s] ...\n"
+              "       %(prog)s [options] QUESTION ... -i FILE",
+        description="Ask several questions about one text in one call. Each question is asked as classif asks "
+                    "one: yes, no or unknown, or with -e after it the options to pick, and with -s a grade. The "
+                    "text is read once, so each question after the first adds a few generated tokens, not "
+                    "another read. The model writes each question before its answer, so the answers stay apart; "
+                    "p and grades are raw, with no fitted temperature.")
+    ap.add_argument("questions", nargs="*", metavar="QUESTION",
+                    help="a question about the text, a word or a whole question; it names its answer in the output")
+    ap.add_argument("-e", "--enum", action="append", metavar="OPTION",
+                    help="an answer to the question before it, as in classif -e: name or name=description; repeat "
+                         "-e or list names with commas; 1 to 9, plus none. With -s, its levels, low to high")
+    ap.add_argument("-s", "--score", action="store_true",
+                    help="grade the question before it, as in classif -s: on its -e levels, or without -e from not "
+                         "at all to extremely")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read the text from FILE; repeat -i, or give a.log,b.log, to join several into one text")
     ap.add_argument("-c", "--context", metavar="TEXT",
@@ -802,20 +846,35 @@ def tag_main(argv, prog="classif tag"):
     ap.add_argument("-t", "--min-p", type=float, metavar="P",
                     help="mark an answer under this p unsure and exit 3")
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS", help="bound the call")
-    a = ap.parse_intermixed_args(argv)
-    if not a.facets + a.facets_e:
-        ap.error("ask at least one question: NAME=OPTIONS or -e NAME=OPTIONS")
+    questions, rest = tag_blocks(argv)
+    a = ap.parse_args(rest)
+    if a.enum or a.score:
+        ap.error("-e and -s belong to the question before them: QUESTION -e OPTION -s")
+    if not questions:
+        ap.error("ask at least one question: QUESTION, QUESTION -e OPTION... or QUESTION -s")
     facets = []
-    for f in a.facets + a.facets_e:
-        name, _, rest = f.partition("=")
-        opts = [o.strip() for o in re.split(r"[,\n]", rest) if o.strip()]
-        if not name.strip() or not opts:
-            ap.error(f"{f!r}: want NAME=OPTION,OPTION...")
-        if len(opts) > 9 or len({o.lower() for o in opts + ["none"]}) != len(opts) + 1:
-            ap.error(f"{name.strip()}: want 1 to 9 distinct options other than none, got {', '.join(opts)}")
-        facets.append((name.strip(), opts))
-    if len({n.lower() for n, _ in facets}) != len(facets):
+    for name, values, graded in questions:
+        name = name.strip()
+        say = types.SimpleNamespace(error=lambda msg, name=name: ap.error(f"{name}: {msg}"))
+        if not name:
+            ap.error("a question needs words")
+        old = re.fullmatch(r"([^\s=]+)=(\S.*,.*)", name)
+        if old and not values and not graded:
+            # The form tag took before; asked as a yes/no question, it would answer with no error.
+            ap.error(f"a question's options follow it as -e: {old[1]} -e {old[2]}")
+        if graded:
+            labels, names, options = score_levels(say, values)
+        elif values:
+            labels, names, options = enum_labels(say, values)
+            if "none" in (n.lower() for n in names[:-1]):
+                say.error("none is the answer when no option fits; give the option another name")
+        else:
+            labels, names, options = ["1", "2", "0"], ["yes", "no", "unknown"], ["yes", "no", "unknown"]
+        facets.append((name, labels, names, options, graded))
+    if len({f[0].lower() for f in facets}) != len(facets):
         ap.error("each question needs its own name")
+    if a.min_p is not None and any(f[4] for f in facets):
+        ap.error("-t marks an answer under a p unsure, and a graded question has a grade, not a p; drop -t or -s")
     if a.min_p is not None and not 0 < a.min_p <= 1:
         ap.error(f"--min-p wants a p above 0 and at most 1, got {a.min_p}")
     if a.deadline is not None and a.deadline <= 0:
@@ -844,6 +903,8 @@ def tag_main(argv, prog="classif tag"):
         if t["label"] is None:
             code = 2
             continue
+        if "grade" in t:
+            continue
         if a.min_p is not None:
             t["unsure"] = t["p"][t["label"]] < a.min_p
             code = code or (3 if t["unsure"] else 0)
@@ -858,7 +919,8 @@ def tag_main(argv, prog="classif tag"):
             if t["label"] is None:
                 print(f"{n:<{w}}  unscored")
             else:
-                print(f"{n:<{w}}  {t['label']:<{lw}}  {t['p'][t['label']]:.2f}" + (" unsure" if t.get("unsure") else ""))
+                v = t["grade"] if "grade" in t else t["p"][t["label"]]
+                print(f"{n:<{w}}  {t['label']:<{lw}}  {v:.2f}" + (" unsure" if t.get("unsure") else ""))
     for n, t in tags.items():
         if t["label"] is None:
             print(f"{PROG}: {n}: unscored: {t['unscored']}", file=sys.stderr)

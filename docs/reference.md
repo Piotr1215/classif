@@ -28,20 +28,19 @@ The direct path sends one Ollama `/api/chat` request with `num_predict: 1`, `tem
 
 ## Several questions, one text
 
-`classif tag NAME=OPTIONS ...` asks every question about one text in a single call, so the text is read once. The text comes from stdin or `-i FILE`, never an argument.
+`classif tag QUESTION [-e OPTION]... [-s] ...` asks every question about one text in a single call, so the text is read once. The text comes from stdin or `-i FILE`, never an argument.
 
 ```sh
-classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter' -i mail.txt
+classif tag urgency -e "today,this week,no deadline" kind -e "asks me,fyi,newsletter" -i mail.txt
 urgency  today    0.98
 kind     asks me  0.99
 ```
 
-- `NAME=OPTIONS`: the name is what the model reads, a word or a whole question. Options are split by commas or newlines, 1 to 9 of them, plus `none`. Option descriptions are not supported.
-- `-e NAME=OPTIONS` gives a question as a flag, for the `classif -e` habit. Repeat it, or mix it with positional questions; positionals come first.
-- `-i`, `-c`, `-j`, `-t` and `-d` work as for a question. `-j` keys each question by its name, with `label`, `p`, `confidence` and `mass`, unrounded, and adds the response's `done_reason` and generated `tokens`. A response cut by its token budget (`done_reason: length`) names the cut on each question it left unanswered.
+- Each positional starts a question, a word or a whole question; the model reads it and the output names its answer by it. The `-e` and `-s` after it are that question's own and work as they do for one question: with neither, the answer is `yes`, `no` or `unknown`; `-e` gives 1 to 9 options, `name` or `name=description`, plus `none`; `-s` grades on the `-e` levels, low to high, or on the built-in ladder, and prints `QUESTION LEVEL GRADE`.
+- `-i`, `-c`, `-j`, `-t` and `-d` work as for a question, except that `-t` is refused beside a graded question. `-j` keys each question by its text, with `label`, `p`, `confidence` and `mass`, unrounded, a graded one with the score fields of `-s -j`, and adds the response's `done_reason` and generated `tokens`. A response cut by its token budget (`done_reason: length`) names the cut on each question it left unanswered.
 - Exit 0 when every question is answered, 2 when any is unscored, 3 when any answer is under `-t`. A text past the window is unscored: ask one question at a time to read it in pieces.
 
-The call carries a JSON schema in `format`. The grammar writes each name as a key, the model writes a digit after it, and that digit's top 20 logprobs score the question as with `-e`. Answers are matched by key, not by position. `p` is raw: no temperature is fitted for this path, so it sits closer to 0 and 1 than a calibrated `-e` answer.
+The call carries a JSON schema in `format`. The grammar writes each name as a key, the model writes a digit after it, and that digit's top 20 logprobs score the question as with `-e`. Answers are matched by key, not by position. `p` and grades are raw: no temperature is fitted for this path, so it sits closer to 0 and 1 than a calibrated `-e` answer.
 
 Each question adds about five generated tokens plus one per token of its name, about 20 ms each on the eval GPU, so short names are cheaper. A separate call reads the whole text again, so `tag` gains as the text grows.
 

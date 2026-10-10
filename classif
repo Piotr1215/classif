@@ -11,7 +11,7 @@ anything else is a question for the judge (judge.py), whose flags and
 exit codes apply unchanged (`classif -h` lists them). A question that is
 itself a command word goes after `--`: classif -- unload.
 
-    classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi' < mail.txt
+    classif tag urgency -e "today,this week,no deadline" kind -e "asks me,fyi" < mail.txt
     classif specs                                # each spec, the fields it wants, its file
     classif classify greeting text="Hello there" --hook triage
     classif smoke greeting

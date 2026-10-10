@@ -127,16 +127,16 @@ Pick the command by how many questions you ask and how many texts they are about
 | Command | Questions | Texts | Answer | Example |
 | --- | --- | --- | --- | --- |
 | `classif` | 1 | 1 | one verdict | `ls \| classif "Is there a license file?"` |
-| `classif tag` | many | 1 | one verdict per question | `ls \| classif tag 'license=present,absent' 'tests=present,absent'` |
+| `classif tag` | many | 1 | one verdict per question | `ls \| classif tag "is there a license?" "are there tests?"` |
 | `classif each` | 1 | many | one verdict per text, best first | `ls -l \| classif each "Is this a folder?"` |
 
 `tag` reads all of its input as one text. `each` reads each input line as its own text, or each argument, or each `-i` file.
 
-`classif tag` asks several questions about one text and reads the text once, printing one `NAME ANSWER P` line per question; see [several questions, one text](docs/reference.md#several-questions-one-text).
+`classif tag` asks several questions about one text and reads the text once, printing one `QUESTION ANSWER P` line per question, `QUESTION LEVEL GRADE` for one graded with `-s`; see [several questions, one text](docs/reference.md#several-questions-one-text).
 
 ```sh
 notmuch show --format=raw id:x |
-  ./classif tag 'urgency=today,this week,no deadline' 'kind=asks me,fyi,newsletter'
+  ./classif tag "is it spam?" kind -e "asks me,fyi,newsletter" urgency -e "no deadline,this week,today" -s
 ```
 
 `classif each` asks one question of each item in a list, any number of them, and prints them best first; see [one question, many items](docs/reference.md#one-question-many-items).
