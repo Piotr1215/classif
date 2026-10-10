@@ -104,9 +104,17 @@ class ContextTests(unittest.TestCase):
                       text="buy followers at my site!")
         self.assertEqual(r.returncode, 1, r.stderr)
         data = json.loads(r.stdout)
-        self.assertEqual((data["label"], data["mode"], data["context"]), ("stop", "direct", str(self.policy)))
+        self.assertEqual((data["label"], data["mode"], data["context"]), ("stop", "direct", [str(self.policy)]))
         user = stub.calls[0]
         self.assertLess(user.index("Context:\n" + POLICY), user.index("Text:\nbuy followers"))
+
+    def test_repeated_c_joins_every_source_in_order_where_one_c_stood(self):
+        stub = Stub(lambda n, user: scored("2"))
+        r = self.call(stub, "-j", "-c", str(self.policy), "-c", "Today is Friday.", "-e", "pass,stop",
+                      "Should this comment pass or stop?", text="buy followers at my site!")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["context"], [str(self.policy), "Today is Friday."])
+        self.assertTrue(stub.calls[0].startswith(f"Context:\n{POLICY}\n\nToday is Friday.\n\nText:\nbuy followers"))
 
     def test_every_reader_and_judge_call_carries_the_context_but_no_link_call_does(self):
         stub = Stub(reader)
@@ -115,7 +123,7 @@ class ContextTests(unittest.TestCase):
                       "The latest comment breaks the context policy.")
         self.assertEqual(r.returncode, 0, r.stderr)
         data = json.loads(r.stdout)
-        self.assertEqual((data["mode"], data["label"], data["context"]), ("memory", "yes", str(self.policy)))
+        self.assertEqual((data["mode"], data["label"], data["context"]), ("memory", "yes", [str(self.policy)]))
         links = [u for u in stub.calls[1:] if "Last line:" in u]
         # The root call reads the question alone, so it carries no context either.
         roots = [u for u in stub.calls[1:] if "Which kind is it?" in u]

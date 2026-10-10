@@ -73,6 +73,14 @@ class EachTests(unittest.TestCase):
         for req in fake.requests:
             self.assertTrue(req["messages"][-1]["content"].startswith("Context:\nGoal: run a half marathon\n\nText:\n"))
 
+    def test_repeated_c_joins_its_sources_before_each_item(self):
+        fake = self.serve(("Goal: run", 0.3, "ctx"))
+        goals = self.file("goals.md", "Goal: run a half marathon\n")
+        run(fake.host, "each", "Is this the right next step?", "-c", goals, "-c", "Budget: 50 EUR", "buy shoes", "x")
+        for req in fake.requests:
+            self.assertTrue(req["messages"][-1]["content"].startswith(
+                "Context:\nGoal: run a half marathon\n\nBudget: 50 EUR\n\nText:\n"))
+
     def test_each_file_is_an_item_named_by_its_file_name(self):
         fake = self.serve(("above market", 0.4))
         a = self.file("a.md", "Pays 90k, above market")

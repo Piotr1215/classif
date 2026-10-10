@@ -214,6 +214,14 @@ class TagTests(unittest.TestCase):
         self.assertTrue(fake.requests[0]["messages"][-1]["content"].startswith(
             f"Context:\nRollbacks need a ticket.\n\nText:\n{MAIL}\n\n"))
 
+    def test_repeated_c_joins_its_sources_in_the_one_request(self):
+        fake = self.serve(URGENT_ASK)
+        d = json.loads(run(fake.host, "tag", "-j", *URGENCY, "-c", "Rollbacks need a ticket.", "-c", "It is 17:00.",
+                           stdin=MAIL).stdout)
+        self.assertEqual(d["context"], ["Rollbacks need a ticket.", "It is 17:00."])
+        self.assertTrue(fake.requests[0]["messages"][-1]["content"].startswith(
+            f"Context:\nRollbacks need a ticket.\n\nIt is 17:00.\n\nText:\n{MAIL}"))
+
     def test_with_no_input_c_is_the_text_tagged(self):
         fake = self.serve(URGENT_ASK)
         r = run(fake.host, "tag", *URGENCY, *KIND, "-c", MAIL, stdin=subprocess.DEVNULL)

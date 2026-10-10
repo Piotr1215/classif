@@ -33,7 +33,7 @@ class Flags(E2E):
     def test_json_names_the_context_file_only_when_one_is_given(self):
         policy = self.write("policy.txt", "Change policy: no production deploys after 18:00 on Fridays.\n")
         args = ("Does this break the change policy?", "Deploying payments-api to production Friday at 23:00.")
-        self.assertEqual(json.loads(self.cli("-j", "-c", str(policy), *args).out)["context"], str(policy))
+        self.assertEqual(json.loads(self.cli("-j", "-c", str(policy), *args).out)["context"], [str(policy)])
         self.assertNotIn("context", json.loads(self.cli("-j", *args).out))
 
     def test_a_context_file_reaches_the_model(self):

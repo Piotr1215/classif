@@ -737,13 +737,18 @@ def read_stdin():
     return "" if silent_socket() else sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
 
-def read_context(ap, value):
-    """-c's text, stripped, or None without -c: the file it names, <(cmd)
-    included, else the value itself. A value that reads as a file name (one
-    word holding a slash or ending in an extension) but names no file is a
-    usage error, so a mistyped path never becomes the context. Empty is too."""
-    if value is None:
-        return None
+def read_context(ap, values):
+    """Every -c's text, stripped, joined in order by a blank line, or None
+    without -c. -c repeats as -i does: a second one used to replace the
+    first, and an answer read without half its context still looks sure."""
+    return "\n\n".join(context_source(ap, v) for v in values) if values else None
+
+
+def context_source(ap, value):
+    """One -c's text, stripped: the file it names, <(cmd) included, else the
+    value itself. A value that reads as a file name (one word holding a
+    slash or ending in an extension) but names no file is a usage error, so
+    a mistyped path never becomes the context. Empty is too."""
     if os.path.exists(value) or (not re.search(r"\s", value) and re.search(r"/|\.\w{1,5}$", value)):
         try:
             with open(value, "rb") as fh:
@@ -840,8 +845,9 @@ def tag_main(argv, prog="classif tag"):
                          "at all to extremely")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read the text from FILE; repeat -i, or give a.log,b.log, to join several into one text")
-    ap.add_argument("-c", "--context", metavar="TEXT",
-                    help="background read first: a file, <(cmd) or the text itself; with no input, the text")
+    ap.add_argument("-c", "--context", action="append", metavar="TEXT",
+                    help="background read first: a file, <(cmd) or the text itself; repeat -c to join several; "
+                         "with no input, the text")
     ap.add_argument("-j", "--json", action="store_true", help="print the full result as JSON")
     ap.add_argument("-t", "--min-p", type=float, metavar="P",
                     help="mark an answer under this p unsure and exit 3")
@@ -1073,9 +1079,9 @@ def each_main(argv, prog="classif each"):
     ap.add_argument("-s", "--score", action="store_true",
                     help="grade each item, as in classif -s: on the -e levels, or without -e from not at all to "
                          "extremely. Items sort by grade, highest first")
-    ap.add_argument("-c", "--context", metavar="TEXT",
-                    help="background read before every item, such as goals: a file, <(cmd) or the text itself. "
-                         "With no items, it is the one judged")
+    ap.add_argument("-c", "--context", action="append", metavar="TEXT",
+                    help="background read before every item, such as goals: a file, <(cmd) or the text itself; "
+                         "repeat -c to join several. With no items, it is the one judged")
     ap.add_argument("-i", "--input", dest="files", action="extend", nargs="+", metavar="FILE",
                     help="items, one per file, each named by its file name")
     ap.add_argument("-k", "--top", type=int, metavar="N", help="show only the top N")
@@ -1098,7 +1104,7 @@ def each_main(argv, prog="classif each"):
     cands = items(ap, a.texts, a.files)
     if not cands and context and not piped():
         # As in classif: given no input, -c is what the question is asked of.
-        name = os.path.basename(a.context) if os.path.isfile(a.context) else "context"
+        name = os.path.basename(a.context[0]) if len(a.context) == 1 and os.path.isfile(a.context[0]) else "context"
         cands, context = [{"name": name, "text": context}], None
     if not cands:
         ap.error("no items: pass them after the question, one per line on stdin, or -i FILE ...")
@@ -1210,9 +1216,10 @@ def main(argv=None, prog="classif"):
                          "lower one exits 1")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read INPUT from FILE; repeat -i, or give a.log,b.log, to join several into one INPUT")
-    ap.add_argument("-c", "--context", metavar="TEXT",
+    ap.add_argument("-c", "--context", action="append", metavar="TEXT",
                     help="background the question needs, read first: a policy, a reference, the date. A file, "
-                         "<(cmd) or the text itself; with no INPUT it is the text judged")
+                         "<(cmd) or the text itself; repeat -c to join several, in order. With no INPUT it is "
+                         "the text judged")
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
                     help="bound all the work; a read cut short exits 3")
     ap.add_argument("-w", "--why", action="store_true",
