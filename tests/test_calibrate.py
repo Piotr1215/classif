@@ -30,6 +30,44 @@ def overconfident_rows(t_true):
     return rows
 
 
+def jev_rows(t_true, kind="score"):
+    """Rows whose Jev distribution is classif's raw one tempered by t_true,
+    as the eval writes them; a choice row also carries -e's none."""
+    rows = []
+    for a, b in ((-0.1, -3.0), (-0.5, -1.2), (-2.0, -0.2), (-0.05, -6.0), (-1.0, -1.1)):
+        logp = {"0": a, "1": b} if kind == "score" else {"a": a, "b": b, "none": -9.0}
+        keys = [k for k in logp if k != "none"]
+        z = sum(math.exp(logp[k] / t_true) for k in keys)
+        rows.append({"kind": kind, "logp": logp, "jev": {k: math.exp(logp[k] / t_true) / z for k in keys}})
+    return rows * 4
+
+
+class JevCalibrateTests(unittest.TestCase):
+    cal = load()
+
+    def test_fit_to_jev_finds_the_temperature_that_reproduces_jevs_distributions(self):
+        self.assertAlmostEqual(self.cal.fit_jev(jev_rows(1.7)), 1.7, delta=0.02)
+
+    def test_a_choice_rows_none_is_left_out_before_tempering(self):
+        row = jev_rows(1.0, kind="choice")[0]
+        self.assertEqual(set(self.cal.at(row, 1.0)), {"a", "b"})
+        self.assertAlmostEqual(self.cal.tv(self.cal.at(row, 1.0), row["jev"]), 0.0)
+
+    def test_scores_e_questions_and_l_questions_are_fitted_apart(self):
+        rows = jev_rows(1.5) + jev_rows(3.0, kind="choice") + [{**r, "kind": "noul", "logp": {
+            "yes": r["logp"]["a"], "no": r["logp"]["b"]}, "jev": {"yes": r["jev"]["a"], "no": r["jev"]["b"]}}
+            for r in jev_rows(0.8, kind="choice")]
+        got = {key: (round(t, 1), len(kind)) for key, kind, t in self.cal.jev_fits(rows)}
+        self.assertEqual(got, {"T_score": (1.5, 20), "T_enum": (3.0, 20), "T": (0.8, 20)})
+
+    def test_write_for_scores_keeps_the_models_other_temperatures(self):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "calibration.json"
+        self.cal.write(str(path), "winnow", 2.79, 200)
+        self.cal.write(str(path), "winnow", 1.21, 52, kind="_score")
+        entry = json.loads(path.read_text())["winnow"]
+        self.assertEqual((entry["T"], entry["T_score"], entry["n_score"]), (2.79, 1.21, 52))
+
+
 class CalibrateTests(unittest.TestCase):
     cal = load()
 

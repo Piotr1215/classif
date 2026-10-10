@@ -6,7 +6,9 @@ run the real command against a fake Ollama whose level probabilities are set
 by words in the text, so every number below is computed by hand."""
 import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 from test_judge import FakeOllama, chat, load, run
 
@@ -108,6 +110,33 @@ class ScoreTests(unittest.TestCase):
         fake = self.serve()
         r = run(fake.host, "How severe?", "UNSCORED", *LEVELS)
         self.assertEqual(r.returncode, 2)
+
+
+class ScoreCalibrationTests(unittest.TestCase):
+    def calibration(self, table):
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        path = Path(d) / "calibration.json"
+        path.write_text(json.dumps({load().DEFAULT_MODEL: table}))
+        return str(path)
+
+    def serve(self):
+        fake = FakeOllama(model([], default=(0.2, 0.6, 0.2)))
+        self.addCleanup(fake.close)
+        return fake
+
+    def test_a_score_uses_the_temperature_fitted_on_scores(self):
+        fake = self.serve()
+        cal = self.calibration({"T": 2.0, "T_enum": 4.0, "T_score": 1.5})
+        out = json.loads(run(fake.host, "How severe?", "text", *LEVELS, "-j", calibration=cal).stdout)
+        e = [v ** (1 / 1.5) for v in (0.2, 0.6, 0.2)]
+        self.assertEqual(out["T"], 1.5)
+        self.assertAlmostEqual(out["probabilities"]["1"], e[1] / sum(e), places=3)
+
+    def test_without_a_score_temperature_a_score_keeps_the_e_one(self):
+        fake = self.serve()
+        out = json.loads(run(fake.host, "How severe?", "text", *LEVELS, "-j",
+                             calibration=self.calibration({"T": 2.0, "T_enum": 4.0})).stdout)
+        self.assertEqual(out["T"], 4.0)
 
 
 class EachScoreTests(unittest.TestCase):

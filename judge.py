@@ -280,14 +280,16 @@ def score(top, labels):
     return {l: v / mass for l, v in raw.items()}, mass
 
 
-def temperature(model, enum=False):
+def temperature(model, enum=False, scale=False):
     """The model's fitted temperature, or None: an unfitted model keeps its
     raw p, so a threshold tuned on it (the #183 gate on llama3.2:3b) holds.
     -e questions have their own, T_enum: gemma4:12b's -l temperature left
-    its -e answers further from the truth than raw p did."""
+    its -e answers further from the truth than raw p did. A score uses
+    T_score, fitted to Jev's level distributions, and T_enum without one."""
     try:
         with open(os.environ.get("CLASSIF_CALIBRATION", CALIBRATION)) as fh:
-            t = json.load(fh)[model]["T_enum" if enum else "T"]
+            entry = json.load(fh)[model]
+        t = entry["T_score"] if scale and "T_score" in entry else entry["T_enum" if enum or scale else "T"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return float(t) if isinstance(t, (int, float)) and t > 0 else None
@@ -416,7 +418,8 @@ def chat(host, model, system, user, options, timeout=None, **extra):
     return resp
 
 
-def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None):
+def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None,
+          scale=False):
     """One scored call, for callers that score many items (classif): pick a
     host once, then judge each item on it. Without a host it routes like the
     CLI. num_ctx and timeout let a hot-path caller run a small window (llama
@@ -449,7 +452,7 @@ def judge(question, text, labels, options=None, model=None, host=None, num_ctx=N
                 "host": host, "mass": round(mass, 3)}
 
     label = max(labels, key=lambda l: p[l])
-    logp, t, p_raw = log_mass(top, labels), temperature(model, enum=options is not None), p
+    logp, t, p_raw = log_mass(top, labels), temperature(model, enum=options is not None, scale=scale), p
     res = {"label": label, "p": calibrate(logp, t) if t else p, "logp": logp, "mass": mass,
            "model": model, "host": host, "ms": ms, "T": t}
     if t:
@@ -979,7 +982,7 @@ def each_main(argv, prog="classif each"):
                 return r
             ls = [str(i) for i in range(1, len(ns))] + ["0"]
         if levels:
-            r = judge(a.question, text, labels, levels, model=model, host=host, timeout=wait, context=ctx)
+            r = judge(a.question, text, labels, levels, model=model, host=host, timeout=wait, context=ctx, scale=True)
             return r if r["label"] is None else {"label": r["label"], **score_answer(r, levels)}
         r = judge(a.question, text, ls, os_, model=model, host=host, timeout=wait, context=ctx)
         if r["label"] is None:
@@ -1243,7 +1246,7 @@ def score_main(a, text, context, labels, levels):
     def ask(t, ctx):
         left = a.deadline - (time.monotonic() - t0) if a.deadline is not None else (
             None if "CLASSIF_TIMEOUT" in os.environ else 15 + (len(t) + len(ctx or "")) / READ_RATE)
-        r = judge(a.question, t, labels, levels, model=model, host=host, timeout=left, context=ctx)
+        r = judge(a.question, t, labels, levels, model=model, host=host, timeout=left, context=ctx, scale=True)
         return r if r["label"] is None else {**r, **score_answer(r, levels)}
 
     r = ask(text, context)

@@ -103,7 +103,7 @@ why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 t
 - `-t C` gates on the confidence: under C the answer prints `unsure` and exits 3. `-p` is refused, since a score has no winner to pass the input on. The input must fit the window in one call.
 - `classif each -s` sorts items by score, highest first, in a `score conf item` table; `-j` items carry `score`, `confidence` and `probabilities`, with the levels once as `legend`, and `-w` adds the top pick's levels to its marks.
 
-Jev reads each level on its own. Asked of the 11 licenses in `/usr/share/common-licenses` and classif's own on six restrictiveness levels, reading each level alone put MIT and Apache-2.0 at "permissive" and averaged 0.44 from Jev's scores, in 2 to 8 s a license; the one-call read averaged 0.12 from Jev's in about 2.2 s, and 0.06 without GFDL-1.3, which Jev spreads over three levels (2026-10-10, `winnow:12b-q4_K_M` against `jev-1.13.0`). A `-e` calibration temperature, if the model has one, applies to the level probabilities too.
+Jev reads each level on its own. Asked of the 11 licenses in `/usr/share/common-licenses` and classif's own on six restrictiveness levels, reading each level alone put MIT and Apache-2.0 at "permissive" and averaged 0.44 from Jev's scores, in 2 to 8 s a license; the one-call read averaged 0.12 from Jev's in about 2.2 s, and 0.06 without GFDL-1.3, which Jev spreads over three levels (2026-10-10, `winnow:12b-q4_K_M` against `jev-1.13.0`). A score uses the model's `T_score` from `calibration.json`, else its `T_enum`.
 
 ## Past nine options
 
@@ -182,7 +182,7 @@ The graph reports its window, traversal hops, unresolved links and failures. `re
 
 A raw model can assign 0.99 to a wrong answer. If `calibration.json` defines a temperature for the model, `p` becomes `softmax(logp / T)`. A temperature above 1 reduces overconfidence without changing label rank or the winner. It can change whether a result passes `-t`.
 
-Label questions (the default yes/no/unknown, specs and the hidden `-l` the evals ask with) use `T`; option questions (`-e`) use `T_enum`. Models and question types without a temperature retain raw probabilities. The supplied `llama3.2:3b` gate threshold uses raw probabilities.
+Label questions (the default yes/no/unknown, specs and the hidden `-l` the evals ask with) use `T`; option questions (`-e`) use `T_enum`; scores (`-s`) use `T_score`, else `T_enum`. Models and question types without a temperature retain raw probabilities. The supplied `llama3.2:3b` gate threshold uses raw probabilities.
 
 Five-fold held-out results, fitted on 200 labeled `-l` cases (synthetic, RAG chunks, private mail) and on the 144 public `-e` cases:
 
@@ -207,7 +207,12 @@ To fit a model:
 evals/eval.py MODEL [HOST]          # score every case, save rows with logp
 evals/calibrate.py MODEL            # fit T and T_enum, report held-out metrics
 evals/calibrate.py MODEL --write    # store them in calibration.json
+evals/jev.py MODEL [HOST]           # ask every case of Jev and classif, save rows with logp
+evals/calibrate.py MODEL --jev      # fit each kind to Jev's distributions, report held-out TV
+evals/calibrate.py MODEL --jev --write   # store T_score
 ```
+
+`--jev` minimizes the cross-entropy of classif's tempered distribution under Jev's and reports five-fold held-out total variation and cross-entropy at T=1, at the temperature classif applies now, and at the fit. `--write` stores only `T_score`; `T` and `T_enum` stay fitted to labels.
 
 The command reads `calibration.json` beside the real script, including when run through a symlink on PATH.
 
@@ -280,3 +285,5 @@ Paired: 7 won, 3 lost, 95% bootstrap interval for the accuracy gain -0.6 to +2.9
 | license (11) | 10/11 | 0.109 / 0.031 | 8/11 | 10/11, mean gap 0.17 |
 
 Both got 139 of the 144 authored cases right. Of the four where their top answers differ, each matched the label twice; classif's two misses answered `insufficient` where the evidence settled it. On the score cases Jev's likeliest level matched the author's in 41 of 41 and classif's in 38, after two cases both had answered alike against the author were reworded to say what their level means (an email due in two days, a review asking for a retry cap before merging). Two of classif's misses are candidate fit, one level off in each direction and outside Jev's spread; the third rates a login outage critical where Jev and the author say blocking. The license outside Jev's spread is GFDL-1.3.
+
+Fitted to Jev's distributions instead of labels (`calibrate.py --jev`, five folds), a temperature does not close the gap. On the 52 score and license cases, held-out TV is 0.073 at the `T_enum` of 1.96 classif applies now and 0.088 at the cross-entropy fit of 2.30, with cross-entropy tied at 0.282; a fit to TV itself reaches 0.071. Top-level agreement is 48 of 52 at every temperature from 1 to 3, since a temperature cannot change which level wins. The `-e` and `-l` cases behave alike: the fit trims cross-entropy and raises TV. The gap sits in which answer wins, so `calibration.json` carries no `T_score` for this model.

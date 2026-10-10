@@ -4,6 +4,9 @@
     evals/eval.py MODEL [HOST]           # first: score every case, keeping logp
     evals/calibrate.py MODEL             # fit T, cross-validate, report
     evals/calibrate.py MODEL --write     # also store T in calibration.json
+    evals/jev.py MODEL                   # or: ask every case of Jev and classif
+    evals/calibrate.py MODEL --jev       # fit each kind to Jev's distributions
+    evals/calibrate.py MODEL --jev --write   # also store T_score in calibration.json
 
 Reads the rows eval.py wrote for MODEL and fits -l questions and -e
 questions apart, as T and T_enum: one temperature does not serve both. T
@@ -12,6 +15,14 @@ softmax(logp / T), the function classif applies. Five folds report what a T
 fit on four does to the fifth, against
 T=1, the model's own log-odds: NLL, Brier on the true label, ECE over 10
 bins of the top p. No label changes rank, so accuracy is the same both ways.
+
+--jev reads the rows evals/jev.py wrote and fits the temperature that brings
+classif's distributions closest to Jev's: the one minimizing the cross-entropy
+of softmax(logp / T) under Jev's distribution, -e's none left out. Scores,
+-e questions and -l questions are fitted apart, and five folds report held-out
+mean total variation and cross-entropy at T=1, at the temperature classif
+applies now, and at the fit. --write stores T_score only: T and T_enum stay
+fitted to labels, and the report shows what a Jev fit would change.
 """
 import datetime
 import importlib.machinery
@@ -85,15 +96,57 @@ def fits(rows):
             yield key, kind, fit(kind)
 
 
-def write(path, model, t, n, enum=False):
-    """Set one model's temperature for one kind of question; its other kind
-    and every other model stay as they were."""
+def at(row, t):
+    """classif's distribution over the answers Jev gave at temperature t: the
+    raw log mass tempered over Jev's keys, so -e's none is left out."""
+    return CLS.calibrate({k: row["logp"][k] for k in row["jev"]}, t)
+
+
+def tv(p, q):
+    return sum(abs(p[k] - q[k]) for k in p) / 2
+
+
+def cross_entropy(rows, t):
+    return statistics.mean(-sum(v * math.log(max(at(r, t)[k], 1e-12)) for k, v in r["jev"].items()) for r in rows)
+
+
+def fit_jev(rows):
+    return min(GRID, key=lambda t: cross_entropy(rows, t))
+
+
+def jev_fits(rows):
+    """(key, rows, T) per kind with rows enough to fold: T_score over scores,
+    T_enum over -e rows (their logp holds none), T over the rest (-l)."""
+    kinds = {"T_score": [], "T_enum": [], "T": []}
+    for r in rows:
+        kinds["T_score" if r["kind"] == "score" else "T_enum" if "none" in r["logp"] else "T"].append(r)
+    for key, kind in kinds.items():
+        if len(kind) >= 2 * FOLDS:
+            yield key, kind, fit_jev(kind)
+
+
+def jev_cross_validate(rows, now):
+    """Held-out mean TV and cross-entropy at T=1, at now and at the fit."""
+    held = {"T=1": [], "now": [], "fitted": []}
+    for k in range(FOLDS):
+        train = [r for i, r in enumerate(rows) if i % FOLDS != k]
+        test = [r for i, r in enumerate(rows) if i % FOLDS == k]
+        t = fit_jev(train)
+        for name, temp in (("T=1", 1.0), ("now", now or 1.0), ("fitted", t)):
+            held[name] += [(tv(at(r, temp), r["jev"]), cross_entropy([r], temp)) for r in test]
+    return {name: (statistics.mean(a for a, _ in v), statistics.mean(b for _, b in v)) for name, v in held.items()}
+
+
+def write(path, model, t, n, enum=False, kind=None):
+    """Set one model's temperature for one kind of question: "" for -l,
+    "_enum" for -e, "_score" for -s. Its other kinds and every other model
+    stay as they were."""
     try:
         with open(path) as fh:
             table = json.load(fh)
     except (OSError, ValueError):
         table = {}
-    kind = "_enum" if enum else ""
+    kind = kind if kind is not None else "_enum" if enum else ""
     table[model] = {**table.get(model, {}), "T" + kind: round(t, 3), "n" + kind: n,
                     "fitted": datetime.date.today().isoformat()}
     with open(path, "w") as fh:
@@ -101,7 +154,32 @@ def write(path, model, t, n, enum=False):
         fh.write("\n")
 
 
+def jev_main(model):
+    src = os.path.join(STATE, f"jev-{model.replace('/', '_').replace(':', '_')}.jsonl")
+    try:
+        with open(src) as fh:
+            rows = [json.loads(line) for line in fh]
+    except OSError:
+        sys.exit(f"no Jev rows at {src}: run evals/jev.py {model} first")
+    rows = [r for r in rows if "logp" in r and "jev" in r]
+    for key, kind, t in jev_fits(rows):
+        now = CLS.temperature(model, enum=key == "T_enum", scale=key == "T_score")
+        held = jev_cross_validate(kind, now)
+        print(f"{model} {key}  n={len(kind)}  fit on all rows {t:.2f}, classif applies {now or 1.0:.2f} now")
+        print(f"{'held out':10} {'tv':>6} {'xent':>6}")
+        for name, (a, b) in held.items():
+            print(f"{name:10} {a:6.3f} {b:6.3f}")
+        if "--write" in sys.argv and key == "T_score":
+            write(CLS.CALIBRATION, model, t, len(kind), kind="_score")
+            print(f"wrote T_score={t:.3f} for {model} to {os.path.realpath(CLS.CALIBRATION)}")
+
+
 def main():
+    if "--jev" in sys.argv:
+        args = [a for a in sys.argv[1:] if a not in ("--write", "--jev")]
+        if len(args) != 1:
+            sys.exit(__doc__.strip().split("\n\n")[1])
+        return jev_main(args[0])
     args = [a for a in sys.argv[1:] if a != "--write"]
     if len(args) != 1:
         sys.exit(__doc__.strip().split("\n\n")[1])
