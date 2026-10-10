@@ -102,7 +102,7 @@ classif -i judge.py "how good is this code?" -s
 very 0.81
 ```
 
-- The output is `LEVEL GRADE`: the level nearest the score, a half rounding up, and the grade, the score over the top level, so 0 to 1 on any ladder. The score is each level's number times its probability, summed, so it runs from 0 to the top level and can land between two. A script reads both with `read level grade`; give levels one-word names when it does.
+- The output is `LEVEL GRADE`: the likeliest level, and the grade, the score over the top level, so 0 to 1 on any ladder. The score is each level's number times its probability, summed, so it runs from 0 to the top level and can land between two. The two can part: 80% on the bottom level with the rest spread over the top ones names the bottom level and grades 0.1, where the level nearest the score is one the model barely chose. `-w` shows where the probability went. A script reads both with `read level grade`; give levels one-word names when it does.
 - The confidence is Jev's Score formula: 1 less the probability-weighted distance from the likeliest level, over the same for an even spread, floored at 0. Probability on a neighbouring level lowers it less than probability at the far end. `-w` and `-j` show it.
 - `-j` carries Jev's answer fields, `type`, `score`, `confidence`, `legend` and `probabilities`, keyed by level number, plus `level` and `grade`, beside `logp`, `mass`, `T`, `model`, `host` and `ms`.
 - `-w` prints where the probability went, one line per level, with the confidence, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the grade most, as `each -w` marks them.

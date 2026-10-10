@@ -326,8 +326,7 @@ def score_confidence(p):
     the likeliest level over the same for an even spread, floored at 0. Mass
     on a neighbouring level costs less than mass at the far end, which the
     top-p formula cannot tell apart."""
-    n = len(p)
-    m = max(range(n), key=p.__getitem__)
+    n, m = len(p), likeliest_level(p)
     even = sum(abs(i - (n - 1) / 2) for i in range(n)) / n
     return max(0.0, 1 - sum(v * abs(i - m) for i, v in enumerate(p)) / even)
 
@@ -373,18 +372,21 @@ def score_levels(ap, values):
     return [str(i) for i in range(len(names))], names, levels
 
 
-def nearest_level(score, n):
-    """The level a score sits closest to, a half rounding up."""
-    return min(n - 1, int(score + 0.5))
+def likeliest_level(p):
+    """The level the model gave the most probability, a tie going to the
+    lower: the answer Jev's confidence measures from. The level nearest the
+    score can be one the model barely chose, as when a tail spread over the
+    top levels pulls the score off the likeliest."""
+    return max(range(len(p)), key=p.__getitem__)
 
 
 def score_answer(r, names):
     """judge()'s result over the level digits as Jev's Score answer fields,
-    plus the name of the level nearest the score and the grade: the score
+    plus the name of the likeliest level and the grade: the score
     over the top level, so 0 to 1 on any ladder."""
     p = [r["p"][str(i)] for i in range(len(names))]
     score = level_score(p)
-    return {"type": "score", "level": names[nearest_level(score, len(names))], "grade": score / (len(names) - 1),
+    return {"type": "score", "level": names[likeliest_level(p)], "grade": score / (len(names) - 1),
             "score": score,
             "confidence": score_confidence(p), "legend": {str(i): l for i, l in enumerate(names)},
             "probabilities": {str(i): v for i, v in enumerate(p)}}
@@ -645,7 +647,7 @@ class Help(argparse.HelpFormatter):
 
 
 EPILOG = """\
-Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the level nearest the grade and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a grade is read, 1 for another option or a grade under -t, 2 unscored, 3 insufficient or less sure than -t.
+Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the likeliest level and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a grade is read, 1 for another option or a grade under -t, 2 unscored, 3 insufficient or less sure than -t.
 
 Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
 
@@ -1106,7 +1108,7 @@ def main(argv=None, prog="classif"):
                       help="grade the input on a ladder instead of a pick. Alone: not at all, slightly, moderately, "
                            "very, extremely. Or give the levels, low to high, 2 to 10, each name or "
                            "name=description, which the model reads as the situation it means; repeat -s or list "
-                           "them in one -s with commas. Prints the level nearest the grade and the grade, 0 to 1")
+                           "them in one -s with commas. Prints the likeliest level and the grade, 0 to 1")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
@@ -1285,8 +1287,8 @@ def score_main(a, text, context, labels, names, levels):
     """-s: a Score question, modeled on Jev's Score. One call reads the
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
-    Jev's Score formula. Prints LEVEL GRADE, the level nearest the score and
-    the score over the top level, 0 to 1. -t gates on that printed grade, not
+    Jev's Score formula. Prints LEVEL GRADE, the likeliest level and the
+    score over the top level, 0 to 1. -t gates on that printed grade, not
     the confidence, so a sure "not urgent" cannot pass -t 0.8 &&. -w adds
     where the probability went, with the confidence, and the lines whose
     removal moves the grade most. Exit 0 scored, 1 under -t, 2 unscored."""

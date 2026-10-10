@@ -42,8 +42,9 @@ class ScoreMathTests(unittest.TestCase):
                         ([0.0, 0.74, 0.26], 0.61), ([0.0, 0.0, 0.0, 1.0], 1.0), ([1 / 3] * 3, 0.0)]:
             self.assertAlmostEqual(self.cls.score_confidence(p), want, places=2, msg=p)
 
-    def test_the_level_named_is_the_one_nearest_the_score_a_half_rounding_up(self):
-        self.assertEqual([self.cls.nearest_level(s, 3) for s in (0.0, 0.49, 0.5, 1.49, 1.5, 2.0)], [0, 0, 1, 1, 2, 2])
+    def test_the_level_named_is_the_likeliest_a_tie_going_to_the_lower(self):
+        self.assertEqual([self.cls.likeliest_level(p) for p in ([0.8, 0.1, 0.1], [0.1, 0.3, 0.6], [0.5, 0.0, 0.5])],
+                         [0, 2, 0])
 
     def test_mass_on_a_neighbour_costs_less_than_mass_at_the_far_end(self):
         self.assertGreater(self.cls.score_confidence([0.6, 0.4, 0.0, 0.0]),
@@ -56,11 +57,16 @@ class ScoreTests(unittest.TestCase):
         self.addCleanup(fake.close)
         return fake
 
-    def test_prints_the_level_nearest_the_score_and_the_grade_on_0_to_1_from_one_call(self):
+    def test_prints_the_likeliest_level_and_the_grade_on_0_to_1_from_one_call(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED)
         self.assertEqual((r.returncode, r.stdout), (0, "workaround 0.70\n"))
         self.assertEqual(len(fake.requests), 1)
+
+    def test_a_level_the_model_barely_chose_is_not_named_though_the_score_sits_on_it(self):
+        fake = self.serve(("split", (0.55, 0.0, 0.45)))
+        r = run(fake.host, "How severe is it?", "a split report", *NAMED)
+        self.assertEqual(r.stdout, "cosmetic 0.45\n")
 
     def test_a_level_without_a_name_is_named_by_its_text(self):
         fake = self.serve(("Safari", (0.0, 0.1, 0.9)))
