@@ -88,6 +88,11 @@ class ScoreTests(unittest.TestCase):
         self.assertIn("Options: 0=low, 1=mid, 2=high.", fake.requests[0]["messages"][-1]["content"])
         self.assertIn("Options: 0=low (no harm), 1=high (harm).", fake.requests[1]["messages"][-1]["content"])
 
+    def test_one_s_splits_on_commas_even_when_a_level_has_several_words(self):
+        fake = self.serve()
+        run(fake.host, "How positive is it?", "a comment", "-s", "meh,encouraging,very positive")
+        self.assertIn("Options: 0=meh, 1=encouraging, 2=very positive.", fake.requests[0]["messages"][-1]["content"])
+
     def test_json_carries_jevs_answer_fields(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
         r = run(fake.host, "How severe is it?", "The export crashes in Safari", *LEVELS, "-j")

@@ -335,8 +335,11 @@ def score_confidence(p):
 def level_options(values):
     """Every -s's levels, low to high, each "name" or "name=description". A
     value with a newline holds one level per line; one with an = splits as
-    -e does. Otherwise commas separate levels only when each is one word, so
-    -s low,mid,high is three and -s "Broken, but a workaround exists" one."""
+    -e does. A lone -s splits on commas, since one level is no ladder, so
+    -s "meh,encouraging,very positive" is three. Repeated, commas separate
+    levels only when each is one word, so -s "Broken, but a workaround
+    exists" is one level among the others."""
+    values = list(values)
     out = []
     for v in values:
         pieces = v.split(",")
@@ -344,7 +347,7 @@ def level_options(values):
             out += v.split("\n")
         elif "=" in v:
             out += enum_options([v])
-        elif len(pieces) > 1 and all(len(piece.split()) == 1 for piece in pieces):
+        elif len(values) == 1 or all(len(piece.split()) == 1 for piece in pieces):
             out += pieces
         else:
             out.append(v)
@@ -1103,7 +1106,7 @@ def main(argv=None, prog="classif"):
                       help="grade the input on a ladder instead of a pick. Alone: not at all, slightly, moderately, "
                            "very, extremely. Or give the levels, low to high, 2 to 10, each name or "
                            "name=description, which the model reads as the situation it means; repeat -s or list "
-                           "names with commas. Prints the level nearest the grade and the grade, 0 to 1")
+                           "them in one -s with commas. Prints the level nearest the grade and the grade, 0 to 1")
     # The labels themselves, no none: the path the default question and the
     # specs score on. evals/eval.py and calibrate.py measure it through here.
     pick.add_argument("-l", "--labels", default=DEFAULT_LABELS, help=argparse.SUPPRESS)
