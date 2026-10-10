@@ -706,11 +706,12 @@ def takes_levels(argv, i, chained):
 
 
 def attach_levels(argv):
-    """(argv, follower): each -s rewritten as --score=LEVELS, or --score= when
-    it takes none, so argparse never reads a question or a text as levels;
-    and the first argument right after an -s that took none, for the caller
-    to check it is the question."""
-    out, follower, i, chained = [], None, 0, False
+    """(argv, follower, took): each -s rewritten as --score=LEVELS, or
+    --score= when it takes none, so argparse never reads a question or a
+    text as levels; the first argument right after an -s that took none, for
+    the caller to check it is the question; and the first argument an -s
+    took, for the caller to check something is left to grade."""
+    out, follower, took, i, chained = [], None, None, 0, False
     while i < len(argv):
         arg = argv[i]
         i += 1
@@ -724,10 +725,11 @@ def attach_levels(argv):
         chained = takes_levels(argv, i, chained)
         out.append("--score=" + (argv[i] if chained else ""))
         if chained:
+            took = argv[i] if took is None else took
             i += 1
         elif follower is None and i < len(argv) and not argv[i].startswith("-"):
             follower = argv[i]
-    return out, follower
+    return out, follower, took
 
 
 def bare_score_check(ap, follower, question):
@@ -1170,7 +1172,7 @@ def each_main(argv, prog="classif each"):
                     help="for the top pick, the lines of its text and of -c whose removal moves its score most. One "
                          "call per line, so a text or context over 60 lines is not marked")
     ap.add_argument("-j", "--json", action="store_true", help="print the items as JSON")
-    args, follower = attach_levels(join_descriptions(argv))
+    args, follower, _ = attach_levels(join_descriptions(argv))
     a = ap.parse_intermixed_args(args)
     bare_score_check(ap, follower, a.question)
     if a.levels is not None and a.enum is not None:
@@ -1317,7 +1319,7 @@ def main(argv=None, prog="classif"):
     # Intermixed: positionals may follow options, as in `classif "q?" -e a,b "text"`.
     given = sys.argv[1:] if argv is None else list(argv)
     joined = join_descriptions(given)
-    args, follower = attach_levels(joined)
+    args, follower, took = attach_levels(joined)
     a = ap.parse_intermixed_args(args)
     bare_score_check(ap, follower, a.question)
     claim = a.enum is None and a.levels is None and a.labels == DEFAULT_LABELS
@@ -1380,6 +1382,10 @@ def main(argv=None, prog="classif"):
         # pipe or argument stays an empty INPUT: judging -c in its place could
         # pass a policy down a -p gate.
         raw, text, context, a.context = context, context, None, None
+    if took is not None and not text:
+        # -s "$(git log -1)": lines or commas read as levels, and the question is graded on nothing.
+        ap.error(f"-s took {short(took, 40)!r} as its levels, and nothing is left to grade: put the text before "
+                 "-s, pipe it in, or pass -i or -c")
 
     if a.levels is not None:
         return score_main(a, text, context, *score_labels)

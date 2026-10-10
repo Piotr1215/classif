@@ -213,6 +213,16 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(fake.requests, [])
 
+    def test_levels_that_leave_nothing_to_grade_were_the_text_and_are_refused(self):
+        fake = self.serve()
+        r = run(fake.host, "How bad is this?", "-s", "fix: retry the upload\n\nIt failed, twice, on Fridays.",
+                stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("put the text before -s", r.stderr)
+        ok = run(fake.host, "How bad is this?", "-s", "low,mid,high", "-c", "the commit", stdin=subprocess.DEVNULL)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(len(fake.requests), 1)
+
     def test_alone_s_grades_on_the_default_ladder(self):
         fake = self.serve(default=(0.0, 0.0, 0.2, 0.6, 0.2))
         r = run(fake.host, "How good is this code?", "some code", "-s")
