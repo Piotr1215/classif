@@ -102,6 +102,41 @@ class ExpectTests(unittest.TestCase):
         self.assertEqual((J.hits(rows, "jev"), J.hits(rows, "classif")), (2, 1))
 
 
+class RowTests(unittest.TestCase):
+    def test_a_row_keeps_the_request_key_and_classifs_raw_log_mass(self):
+        ours = {"label": "1", "probabilities": {"0": 0.1, "1": 0.9, "2": 0.0}, "score": 0.9,
+                "logp": {"0": -2.3, "1": -0.1, "2": -9.0}, "T": 1.958, "ms": 200}
+        jev = {"score": 1.0, "probabilities": {"0": 0.0, "1": 1.0, "2": 0.0}, "model": "jev-1.13.0", "ms": 250}
+        row = J.make_row(SCORE, jev, ours, "abc")
+        self.assertEqual((row["key"], row["case"], row["logp"], row["T"]), ("abc", "GPL-3", ours["logp"], 1.958))
+        self.assertTrue(row["within"])
+
+    def test_the_request_key_is_the_same_for_the_same_request_in_any_key_order(self):
+        a = {"state": "x", "model": "jev-latest", "questions": {"q": {"type": "noul", "instructions": "y"}}}
+        b = {"questions": {"q": {"instructions": "y", "type": "noul"}}, "model": "jev-latest", "state": "x"}
+        self.assertEqual(J.request_key(a), J.request_key(b))
+        self.assertNotEqual(J.request_key(a), J.request_key({**a, "state": "z"}))
+
+
+class BootstrapTests(unittest.TestCase):
+    def test_the_interval_holds_the_mean_and_repeats_with_the_seed(self):
+        xs = [0.0, 0.1, 0.2, 0.3, 0.9]
+        lo, hi = J.bootstrap(xs)
+        self.assertLess(lo, sum(xs) / len(xs))
+        self.assertGreater(hi, sum(xs) / len(xs))
+        self.assertEqual(J.bootstrap(xs), (lo, hi))
+        self.assertEqual(J.bootstrap([0.2] * 5), (0.2, 0.2))
+
+    def test_a_paired_diff_joins_runs_on_the_request_key(self):
+        a = [{"key": k, "tv": 0.3, "agree": False} for k in "abcdef"] + [{"key": "gone", "tv": 0.9, "agree": False}]
+        b = [{"key": k, "tv": 0.1, "agree": True} for k in "fedcba"] + [{"key": "new", "unscored": "x"}]
+        d = J.paired(a, b)
+        self.assertEqual((d["n"], round(d["tv_a"], 3), round(d["tv_b"], 3), d["agree_a"], d["agree_b"]),
+                         (6, 0.3, 0.1, 0, 6))
+        self.assertAlmostEqual(d["delta"], -0.2)
+        self.assertLess(d["ci"][1], 0)
+
+
 class CacheTests(unittest.TestCase):
     def test_a_repeated_request_is_answered_from_the_cache(self):
         calls = []

@@ -2,6 +2,7 @@
 """Ask Jev and classif the same cases and measure how far apart they answer.
 
     evals/jev.py MODEL [HOST]          # TYPESAFE_API_KEY set; HOST defaults to localhost:11434
+    evals/jev.py --diff A.jsonl B.jsonl    # run B against run A, paired by case
 
 Jev (TypeSafe's jev-latest) is the reference: classif borrows its primitives,
 so the closer classif's distributions sit to Jev's, the more its answers can
@@ -19,12 +20,16 @@ score also reports its gap from Jev's and whether that gap sits within Jev's
 own spread, the standard deviation of its level distribution, at least FLOOR
 of a level. Jev's answers are cached under ~/.local/state/classif/jev keyed
 by request, so a rerun calls Jev only for a new or changed case; they stay
-out of git. Rows land in ~/.local/state/classif/jev-<model>.jsonl.
+out of git. Rows land in ~/.local/state/classif/jev-<model>.jsonl, each with
+classif's raw log mass for evals/calibrate.py --jev. --diff pairs two runs'
+rows by request and gives the change in mean TV a 95% bootstrap interval, so
+a prompt or temperature change is judged against the noise of 200 cases.
 """
 import hashlib
 import json
 import math
 import os
+import random
 import statistics
 import subprocess
 import sys
@@ -109,10 +114,15 @@ def post(req):
     return resp
 
 
+def request_key(req):
+    """A request's hash, the same whatever order its keys come in: the cache
+    file name, and the key that pairs one case across runs."""
+    return hashlib.sha256(json.dumps(req, sort_keys=True).encode()).hexdigest()
+
+
 def jev_answer(req, cache, ask=post):
     """Jev's answer to req, from cache when the same request was asked before."""
-    key = hashlib.sha256(json.dumps(req, sort_keys=True).encode()).hexdigest()
-    path = os.path.join(cache, key + ".json")
+    path = os.path.join(cache, request_key(req) + ".json")
     if os.path.exists(path):
         with open(path) as fh:
             resp = json.load(fh)
@@ -172,6 +182,51 @@ def compare(case, jev, ours):
     return row
 
 
+def make_row(case, jev, ours, key):
+    """One case's row: both distributions, how far apart they are, and
+    classif's raw log mass and temperature, which a calibration fit reads."""
+    name = case.get("id") or os.path.basename(case.get("path", "")) or case["question"][:60]
+    row = {"task": case["task"], "kind": case["kind"], "case": name, "key": key, "jev": jev_dist(jev, case),
+           "jev_model": jev["model"], "jev_ms": jev["ms"], "ms": ours.get("ms"),
+           **({"expect": case["expect"]} if "expect" in case else {})}
+    if "unscored" in ours:
+        return {**row, "unscored": ours["unscored"]}
+    return {**row, "classif": classif_dist(ours, case), "logp": ours["logp"], "T": ours.get("T"),
+            **compare(case, jev, ours)}
+
+
+def bootstrap(xs, n=2000, seed=0):
+    """A 95% interval for the mean of xs: resample n times with a fixed seed,
+    so a rerun on the same rows prints the same interval."""
+    rng = random.Random(seed)
+    means = sorted(statistics.fmean(rng.choices(xs, k=len(xs))) for _ in range(n))
+    return means[int(n * 0.025)], means[int(n * 0.975) - 1]
+
+
+def paired(a, b):
+    """Run b against run a on the cases both scored, joined on the request
+    key: mean TV of each, b's change with its 95% interval, and agreements."""
+    later = {r["key"]: r for r in b if "tv" in r}
+    pairs = [(r, later[r["key"]]) for r in a if "tv" in r and r.get("key") in later]
+    deltas = [y["tv"] - x["tv"] for x, y in pairs]
+    return {"n": len(pairs), "tv_a": statistics.fmean(x["tv"] for x, _ in pairs),
+            "tv_b": statistics.fmean(y["tv"] for _, y in pairs), "delta": statistics.fmean(deltas),
+            "ci": bootstrap(deltas), "agree_a": sum(x["agree"] for x, _ in pairs),
+            "agree_b": sum(y["agree"] for _, y in pairs)}
+
+
+def diff(a_path, b_path):
+    """Print run b against run a, per task and over all cases."""
+    with open(a_path) as fa, open(b_path) as fb:
+        a, b = [json.loads(line) for line in fa], [json.loads(line) for line in fb]
+    for task in ["synthetic", "choice", "score", "license", "ALL"]:
+        rs = [r for r in a if task == "ALL" or r["task"] == task]
+        d = paired(rs, b) if any("tv" in r for r in rs) else None
+        if d and d["n"]:
+            print(f"{task:10} n={d['n']} tv {d['tv_a']:.3f} -> {d['tv_b']:.3f}  change {d['delta']:+.3f} "
+                  f"[{d['ci'][0]:+.3f}, {d['ci'][1]:+.3f}]  agree {d['agree_a']} -> {d['agree_b']}")
+
+
 def hits(rows, who):
     """How many cases with an expected level have it as the likeliest level in row[who]."""
     return sum(1 for r in rows if "expect" in r and max(r[who], key=r[who].get) == str(r["expect"]))
@@ -204,6 +259,8 @@ def report(model, rows):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--diff":
+        return diff(sys.argv[2], sys.argv[3])
     if len(sys.argv) < 2:
         sys.exit(__doc__.strip().split("\n\n")[1])
     if not os.environ.get("TYPESAFE_API_KEY"):
@@ -214,26 +271,18 @@ def main():
     subprocess.run([CLASS, "warm?", "x"], env=env, capture_output=True, check=False)
     rows = []
     for case in cases():
-        jev = jev_answer(jev_request(case, text_of(case)), os.path.join(STATE, "jev"))
+        req = jev_request(case, text_of(case))
+        jev = jev_answer(req, os.path.join(STATE, "jev"))
         r = subprocess.run([CLASS, "-j", *classif_args(case)], env=env, capture_output=True, text=True, check=False)
         try:
             ours = json.loads(r.stdout)
         except ValueError:
             ours = {"label": None, "unscored": r.stderr.strip()[-200:]}
-        name = case.get("id") or os.path.basename(case.get("path", "")) or case["question"][:60]
-        row = {"task": case["task"], "kind": case["kind"], "case": name, "jev": jev_dist(jev, case),
-               "jev_model": jev["model"], "jev_ms": jev["ms"], "ms": ours.get("ms"),
-               **({"expect": case["expect"]} if "expect" in case else {})}
-        if "unscored" not in ours:
-            row.update({"classif": classif_dist(ours, case), **compare(case, jev, ours)})
-        else:
-            row["unscored"] = ours["unscored"]
-        rows.append(row)
+        rows.append(make_row(case, jev, ours, request_key(req)))
     os.makedirs(STATE, exist_ok=True)
     out = os.path.join(STATE, f"jev-{model.replace('/', '_').replace(':', '_')}.jsonl")
     with open(out, "w") as fh:
-        for row in rows:
-            fh.write(json.dumps(row) + "\n")
+        fh.writelines(json.dumps(row) + "\n" for row in rows)
     report(model, rows)
     print(f"rows: {out}")
 
