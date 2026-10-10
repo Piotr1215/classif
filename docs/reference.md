@@ -78,6 +78,33 @@ p(yes)  answer     item
 
 Each call is the direct path above with its own timeout; items are judged one after another on one host.
 
+## A score
+
+`-s LEVEL`, repeated, asks for a degree on ordered levels instead of a pick, modeled on [Jev's Score](https://docs.typesafe.ai/primitives/score). Give 2 to 10 levels, low to high, each a situation the model can match rather than a degree word: "Broken, but a workaround exists" places a report, "moderately severe" does not. One call reads the levels as digits 0 to n-1 and answers one; classif reads each level's probability from that token.
+
+```sh
+classif "How restrictive is this license for third-party code shipped inside a closed-source paid product?" \
+  -i /usr/share/common-licenses/MPL-2.0 -s "Permissive: nothing to keep or share" -s "Notice: keep the copyright notice" \
+  -s "File-level copyleft: changes to its files must be shared" -s "Library copyleft: changes to the library must be shared" \
+  -s "Strong copyleft: the whole program must be shared" -w
+2.06 0.87
+where the probability went
+  0  0.00  Permissive: nothing to keep or share
+  1  0.04  Notice: keep the copyright notice
+  2  0.85  File-level copyleft: changes to its files must be shared
+  3  0.09  Library copyleft: changes to the library must be shared
+  4  0.01  Strong copyleft: the whole program must be shared
+why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 to 60
+```
+
+- The output is `SCORE CONFIDENCE`. The score is each level's number times its probability, summed, so it runs from 0 to the top level and can land between two. The confidence is Jev's Score formula: 1 less the probability-weighted distance from the likeliest level, over the same for an even spread, floored at 0. Probability on a neighbouring level lowers it less than probability at the far end.
+- `-j` carries Jev's answer fields, `type`, `score`, `confidence`, `legend` and `probabilities`, keyed by level number, beside `logp`, `mass`, `T`, `model`, `host` and `ms`.
+- `-w` prints where the probability went, one line per level, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the score most, as `each -w` marks them.
+- `-t C` gates on the confidence: under C the answer prints `unsure` and exits 3. `-p` is refused, since a score has no winner to pass the input on. The input must fit the window in one call.
+- `classif each -s` sorts items by score, highest first, in a `score conf item` table; `-j` items carry `score`, `confidence` and `probabilities`, with the levels once as `legend`, and `-w` adds the top pick's levels to its marks.
+
+Jev reads each level on its own. Asked of the 11 licenses in `/usr/share/common-licenses` and classif's own on six restrictiveness levels, reading each level alone put MIT and Apache-2.0 at "permissive" and averaged 0.44 from Jev's scores, in 2 to 8 s a license; the one-call read averaged 0.12 from Jev's in about 2.2 s, and 0.06 without GFDL-1.3, which Jev spreads over three levels (2026-10-10, `winnow:12b-q4_K_M` against `jev-1.13.0`). A `-e` calibration temperature, if the model has one, applies to the level probabilities too.
+
 ## Past nine options
 
 A model picks among a few options well and among many poorly, and option digits past 9 are no longer one token. Past nine `-e` options, classif asks each option alone whether it is the answer, keeps the three with the highest p(yes) in the order given, and asks the question once more with those three and `none`. The text and `-c` come first in every prompt, so after the first call each costs little more than its question: twelve options answered in about 1.3 s on this laptop, against about 0.2 s for one three-option call (2026-10-09, `winnow:12b-q4_K_M`, wall time including startup).
