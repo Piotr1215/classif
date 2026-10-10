@@ -109,10 +109,18 @@ class ScoreTests(unittest.TestCase):
                                    "why: the lines whose removal moves the grade most\n"
                                    "  +0.200  only in Safari\n")
 
-    def test_under_t_the_confidence_is_unsure_and_exits_3(self):
+    def test_t_gates_on_the_printed_grade_so_a_lower_one_exits_1(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
-        r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED, "-t", "0.5")
-        self.assertEqual((r.returncode, r.stdout), (3, "workaround 0.70 unsure\n"))
+        at = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED, "-t", "0.69")
+        under = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED, "-t", "0.71")
+        self.assertEqual((at.returncode, at.stdout), (0, "workaround 0.70\n"))
+        self.assertEqual((under.returncode, under.stdout), (1, "workaround 0.70\n"))
+
+    def test_a_sure_low_grade_does_not_pass_the_gate(self):
+        fake = self.serve(("calm", (1.0, 0.0, 0.0)))
+        r = run(fake.host, "How severe is it?", "calm note", *NAMED, "-t", "0.8", "-j")
+        out = json.loads(r.stdout)
+        self.assertEqual((r.returncode, out["grade"], out["confidence"], out["below"]), (1, 0.0, 1.0, True))
 
     def test_s_needs_2_to_10_levels(self):
         fake = self.serve()

@@ -642,7 +642,7 @@ class Help(argparse.HelpFormatter):
 
 
 EPILOG = """\
-Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the level nearest the grade and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a score is read, 1 for another option, 2 unscored, 3 insufficient or below -t.
+Output: LABEL P, the winner and its probability; with -s, LEVEL GRADE, the level nearest the grade and the grade, 0 to 1; -j for JSON. Exit: 0 when the first option wins (yes) or a grade is read, 1 for another option or a grade under -t, 2 unscored, 3 insufficient or less sure than -t.
 
 Quote the question and a text argument. An -e description may go unquoted unless it holds ? * ' or #; its words run to the next option, so in scripts put the text before -e or pipe it in:
 
@@ -1112,7 +1112,8 @@ def main(argv=None, prog="classif"):
                     help="gate: pass INPUT through when the first option wins")
     ap.add_argument("-t", "--min-p", type=float, metavar="P",
                     help="act only on an answer at least this sure, e.g. -t 0.8; a less sure one prints unsure and "
-                         "exits 3, so && and -p do not fire")
+                         "exits 3, so && and -p do not fire. With -s, act only on a grade at least this high; a "
+                         "lower one exits 1")
     ap.add_argument("-i", "--input", dest="files", action="append", metavar="FILE",
                     help="read INPUT from FILE; repeat -i, or give a.log,b.log, to join several into one INPUT")
     ap.add_argument("-c", "--context", metavar="TEXT",
@@ -1282,9 +1283,10 @@ def score_main(a, text, context, labels, names, levels):
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
     Jev's Score formula. Prints LEVEL GRADE, the level nearest the score and
-    the score over the top level, 0 to 1; -t gates on the confidence. -w adds
+    the score over the top level, 0 to 1. -t gates on that printed grade, not
+    the confidence, so a sure "not urgent" cannot pass -t 0.8 &&. -w adds
     where the probability went, with the confidence, and the lines whose
-    removal moves the grade most. Exit 0 scored, 2 unscored, 3 under -t."""
+    removal moves the grade most. Exit 0 scored, 1 under -t, 2 unscored."""
     host, model = route()
     if not host:
         return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
@@ -1301,7 +1303,7 @@ def score_main(a, text, context, labels, names, levels):
         why = r.pop("unscored") + (". A score reads the whole input in one call, so it must fit the window"
                                    if r.get("overflow") else "")
         return unscored(why, a.json, **{k: v for k, v in r.items() if k not in ("label", "overflow")})
-    unsure = a.min_p is not None and r["confidence"] < a.min_p
+    below = a.min_p is not None and r["grade"] < a.min_p
     marks = unmarked = None
     if a.why:
         marks, unmarked = mark_lines(ask, text, context, r["grade"], "grade")
@@ -1315,16 +1317,16 @@ def score_main(a, text, context, labels, names, levels):
         if context:
             res["context"] = a.context
         if a.min_p is not None:
-            res["unsure"] = unsure
+            res["below"] = below
         if a.why:
             res.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
         dump(res)
     else:
-        print(f"{r['level']} {r['grade']:.2f}" + (" unsure" if unsure else ""))
+        print(f"{r['level']} {r['grade']:.2f}")
         if a.why:
             print_levels("where the probability went", r)
             print_marks("why", "the grade", marks, unmarked)
-    return 3 if unsure else 0
+    return 1 if below else 0
 
 
 FINALISTS = 3   # options past nine narrow to these before the model picks
