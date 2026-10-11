@@ -272,8 +272,8 @@ class AutoInputTests(unittest.TestCase):
 
     @staticmethod
     def witness(body, n):
-        """A reader that finds the failure line, with no overflow: the text is short.
-        It keys on the line's words, since the claim in every prompt says failure."""
+        """A reader that finds the failure line. It keys on the line's words,
+        since the claim in every prompt says failure."""
         user = body["messages"][1]["content"]
         if "Which kind is it?" in user:
             return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
@@ -281,41 +281,105 @@ class AutoInputTests(unittest.TestCase):
             return chat([("fits" if "access denied" in user else "unrelated", -0.01)])
         return chat([("yes", -0.01)])
 
-    SHORT = "Note 0: routine check passed.\nDeployment failure: access denied.\nNote 2: routine check passed.\n"
+    @staticmethod
+    def settled(body, n):
+        """One call on the whole text: yes while the failure line is in it."""
+        return chat([("yes" if "access denied" in body["messages"][1]["content"] else "no", -0.01)])
 
-    def test_why_reads_a_short_text_line_by_line_and_prints_the_lines(self):
-        fake = self.serve(self.witness)
+    SHORT = "Note 0: routine check passed.\nDeployment failure: access denied.\nNote 2: routine check passed.\n"
+    # One line past what -w marks: a text this long is read line by line instead.
+    LONG = "".join(f"Note {i}: routine check passed.\n" for i in range(61))
+    MARKED = ("why: the lines whose removal moves p(yes) most", "  +1.000  2: Deployment failure: access denied.")
+
+    @staticmethod
+    def read_line_by_line(fake):
+        return [r for r in fake.requests if "Which kind is it?" in r["messages"][1]["content"]]
+
+    def test_why_keeps_the_one_call_answer_and_marks_the_line_that_moves_it(self):
+        fake = self.serve(self.settled)
+        plain = self.call(fake, "An entry reports a deployment failure.", text=self.SHORT)
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text=self.SHORT)
         self.assertEqual(result.returncode, 0, result.stderr)
         verdict, *lines = result.stdout.splitlines()
-        self.assertTrue(verdict.startswith("yes "), verdict)
-        self.assertEqual(lines, ["  2: Deployment failure: access denied."])
+        self.assertEqual(verdict, plain.stdout.strip())
+        self.assertEqual(lines, list(self.MARKED))
+        self.assertEqual((len(fake.requests), self.read_line_by_line(fake)), (1 + 1 + 3, []))
 
     def test_why_names_the_file_and_its_own_line_numbers(self):
-        fake = self.serve(self.witness)
+        fake = self.serve(self.settled)
         a, b = Path(self.tmp.name) / "a.log", Path(self.tmp.name) / "b.log"
         a.write_text("Note 0: all fine.\nNote 1: all fine.")
         b.write_text("Note 2: all fine.\n  Deployment failure: access denied.\n")
         result = self.call(fake, "--why", "-i", f"{a},{b}", "An entry reports a deployment failure.")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[1:], [f"  {b}:2: Deployment failure: access denied."])
+        self.assertEqual(result.stdout.splitlines()[2:], [f"  +1.000  {b}:2: Deployment failure: access denied."])
         result = self.call(fake, "-j", "--why", "-i", f"{a},{b}", "An entry reports a deployment failure.")
-        self.assertEqual(json.loads(result.stdout)["read"]["evidence"],
-                         [{"file": str(b), "line": 2, "end": 2, "text": "Deployment failure: access denied."}])
+        self.assertEqual(json.loads(result.stdout)["marks"], [
+            {"from": "text", "at": 2, "line": "  Deployment failure: access denied.", "delta": 1.0, "file": str(b)}])
 
-    def test_why_puts_the_lines_in_the_json(self):
-        fake = self.serve(self.witness)
+    def test_why_numbers_lines_of_the_input_past_its_leading_blank_lines(self):
+        fake = self.serve(self.settled)
+        result = self.call(fake, "--why", "An entry reports a deployment failure.", text="\n\n" + self.SHORT)
+        self.assertEqual(result.stdout.splitlines()[1:], [self.MARKED[0], self.MARKED[1].replace("2:", "4:")])
+
+    def test_why_puts_the_marks_in_the_json_of_a_direct_answer(self):
+        fake = self.serve(self.settled)
         result = self.call(fake, "-j", "-w", "An entry reports a deployment failure.", text=self.SHORT)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
-        self.assertEqual(data["mode"], "memory")
-        self.assertEqual(data["read"]["evidence"][0]["line"], 2)
+        self.assertEqual((data["mode"], data["label"]), ("direct", "yes"))
+        self.assertEqual(data["marks"], [{"from": "text", "at": 2, "line": "Deployment failure: access denied.",
+                                          "delta": 1.0}])
 
     def test_why_on_a_gate_keeps_the_passed_text_clean(self):
-        fake = self.serve(self.witness)
+        fake = self.serve(self.settled)
         result = self.call(fake, "-p", "--why", "An entry reports a deployment failure.", text=self.SHORT)
         self.assertEqual((result.returncode, result.stdout), (0, self.SHORT), result.stderr)
-        self.assertIn("2: Deployment failure: access denied.", result.stderr)
+        self.assertIn(self.MARKED[1], result.stderr)
+
+    def test_why_on_one_line_says_it_is_not_marked(self):
+        fake = self.serve(self.settled)
+        result = self.call(fake, "--why", "An entry reports a deployment failure.", text="Note 0: all fine.\n")
+        self.assertEqual(result.stdout.splitlines(), [
+            "no 1.00", "why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 to 60"])
+
+    def test_why_marks_the_option_that_won(self):
+        fake = self.serve(lambda body, n: chat([("2" if "payment was reversed" in body["messages"][1]["content"] else "1",
+                                                 -0.01)]))
+        text = "Invoice INV-42 was issued.\nThat payment was reversed.\n"
+        result = self.call(fake, "--why", "-e", "paid,reversed", "What is the status?", text=text)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["reversed 1.00", "why: the lines whose removal moves p(reversed) most",
+                                                      "  +1.000  2: That payment was reversed."])
+
+    def test_why_past_the_marked_lines_reads_line_by_line_and_prints_the_lines(self):
+        fake = self.serve(self.witness)
+        text = self.LONG.replace("Note 1: routine check passed.", "Deployment failure: access denied.")
+        result = self.call(fake, "--why", "An entry reports a deployment failure.", text=text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["yes 1.00", "  2: Deployment failure: access denied."])
+        read = json.loads(self.call(fake, "-j", "--why", "An entry reports a deployment failure.", text=text).stdout)
+        self.assertEqual((read["mode"], read["read"]["label"], read["read"]["evidence"][0]["line"]), ("direct", "yes", 2))
+
+    def test_why_past_the_marked_lines_never_replaces_the_answer(self):
+        # The one call says yes; the line read then finds nothing, or a breaking line. The yes stands both times.
+        for found, judged, report in (
+                ("unrelated", "unknown", "  (read line by line: insufficient, "),
+                ("breaks", "no", "  (read line by line the answer is no, so no line is shown for yes; -j has its lines)")):
+            def respond(body, n, found=found, judged=judged):
+                user = body["messages"][1]["content"]
+                if n == 1:
+                    return chat([("yes", -0.01)])
+                if "Which kind is it?" in user:
+                    return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
+                if "Taken alone" in user or "Does this passage" in user:
+                    return chat([(found if "Note 7:" in user else "unrelated", -0.01)])
+                return chat([(judged, -0.01)])
+            result = self.call(self.serve(respond), "--why", "An entry reports a deployment failure.", text=self.LONG)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            verdict, line = result.stdout.splitlines()
+            self.assertEqual(verdict, "yes 1.00")
+            self.assertTrue(line.startswith(report), line)
 
     def test_why_on_a_whole_text_question_prints_the_lines_it_rests_on(self):
         # The root call files the question under the whole text, answered from a
@@ -328,16 +392,14 @@ class AutoInputTests(unittest.TestCase):
                 return chat([("fits" if "Hello there" in user else "unrelated", -0.01)])
             return chat([("yes", -0.01)])
         fake = self.serve(respond)
-        text = "Subject: hi\nHello there, how are you?\nRegards\n"
+        text = "Subject: hi\nHello there, how are you?\nRegards\n" + self.LONG
         result = self.call(fake, "--why", "Is this a greeting?", text=text)
         self.assertEqual(result.returncode, 0, result.stderr)
-        verdict, *lines = result.stdout.splitlines()
-        self.assertTrue(verdict.startswith("yes "), verdict)
-        self.assertEqual(lines, ["  2: Hello there, how are you?"])
+        self.assertEqual(result.stdout.splitlines(), ["yes 1.00", "  2: Hello there, how are you?"])
         read = json.loads(self.call(fake, "-j", "--why", "Is this a greeting?", text=text).stdout)["read"]
         self.assertEqual((read["kind"]["kind"], read["basis"], read["lines"]["verdict"]), ("whole", "sample", "supported"))
 
-    def test_why_with_options_prints_the_line_not_the_passage(self):
+    def test_why_with_options_past_the_marked_lines_prints_the_line_not_the_passage(self):
         def respond(body, n):
             user = body["messages"][1]["content"]
             if "Going only by this passage" in user:
@@ -345,19 +407,17 @@ class AutoInputTests(unittest.TestCase):
             return chat([("2", -0.01)])
         fake = self.serve(respond)
         text = ("Invoice INV-42 was issued.\nIt was sent to the customer.\nThat payment was reversed.\n"
-                "The customer was notified.\n")
+                "The customer was notified.\n" + self.LONG)
         result = self.call(fake, "--why", "-e", "paid,reversed", "What is the status?", text=text)
         self.assertEqual(result.returncode, 1, result.stderr)
-        verdict, *lines = result.stdout.splitlines()
-        self.assertTrue(verdict.startswith("reversed "), verdict)
-        self.assertEqual(lines, ["  3: That payment was reversed."])
+        self.assertEqual(result.stdout.splitlines(), ["reversed 1.00", "  3: That payment was reversed."])
 
     def test_why_with_only_c_points_at_lines_of_c(self):
         # With no INPUT, -c is the text judged, so its lines are the ones cited.
-        fake = self.serve(self.witness)
+        fake = self.serve(self.settled)
         result = self.call(fake, "--why", "-c", self.SHORT, "An entry reports a deployment failure.")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[1:], ["  2: Deployment failure: access denied."])
+        self.assertEqual(result.stdout.splitlines()[1:], list(self.MARKED))
 
     def test_without_input_c_is_the_text_judged_not_context(self):
         fake = self.serve(lambda *_: chat([("yes", -0.01)]))
@@ -403,16 +463,6 @@ class AutoInputTests(unittest.TestCase):
             self.assertIn(f"-c {value}: No such file or directory. -c takes a file, <(cmd) or the text itself",
                           result.stderr)
         self.assertEqual(fake.requests, [])
-
-    def test_why_says_so_when_no_line_settles_the_answer(self):
-        def respond(body, n):
-            user = body["messages"][1]["content"]
-            if "Which kind is it?" in user:
-                return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
-            return chat([("unrelated" if "Taken alone" in user or "Does this passage" in user else "no", -0.01)])
-        fake = self.serve(respond)
-        result = self.call(fake, "--why", "An entry reports a deployment failure.", text="Note 0: all fine.\n")
-        self.assertIn("(no line reads for or against it)", result.stdout + result.stderr)
 
     def test_why_with_custom_labels_is_refused_before_any_call(self):
         fake = self.serve(lambda *_: chat([("a", -0.01)]))

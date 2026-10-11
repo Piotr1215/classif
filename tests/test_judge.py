@@ -570,7 +570,7 @@ class CliTests(unittest.TestCase):
     def test_why_past_nine_options_is_refused(self):
         r = run(DEAD, "-w", "q?", "x", "-e", ",".join(f"o{i}" for i in range(10)))
         self.assertEqual(r.returncode, 2)
-        self.assertIn("--why reads the text in pieces, which pick among at most 9 options; got 10", r.stderr)
+        self.assertIn("--why picks among at most 9 options; got 10", r.stderr)
 
     def test_the_input_file_flag_is_i_and_f_is_gone(self):
         out = run(DEAD, "--help").stdout

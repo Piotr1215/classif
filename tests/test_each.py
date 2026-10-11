@@ -157,7 +157,7 @@ class EachTests(unittest.TestCase):
         self.assertEqual([(row["name"], row["score"], row["label"]) for row in out["items"]],
                          [("alpha\nfiller", 0.9, "yes"), ("beta", 0.5, "yes")])
         self.assertEqual(out["items"][0]["p"], {"yes": 0.9, "no": 0.1, "unknown": 0.0})
-        self.assertEqual(out["items"][0]["marks"], [{"from": "text", "line": "alpha", "delta": 0.4}])
+        self.assertEqual(out["items"][0]["marks"], [{"from": "text", "at": 1, "line": "alpha", "delta": 0.4}])
         self.assertEqual([m["name"] for m in out["unscored"]], ["UNSCORED"])
 
     def test_past_nine_options_each_item_is_screened_and_sorts_by_its_first_options_p_yes(self):

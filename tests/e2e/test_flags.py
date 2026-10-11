@@ -171,7 +171,8 @@ class FlagJudgement(E2E):
     def test_why_cites_the_line_that_settles_the_answer(self):
         self.write("build.log", "Build started.\nCompiling 42 files.\nERROR: undefined symbol foo in bar.c\nBuild finished.\n")
         r = self.cli("-w", "Did the build hit an error?", "-i", "build.log")
-        spans = [(int(a), int(b or a)) for a, b in re.findall(r"^\s+build\.log:(\d+)(?:-(\d+))?:", r.out, re.M)]
+        spans = [(int(a), int(b or a))
+                 for a, b in re.findall(r"^\s+(?:[+-]\d\.\d{3}\s+)?build\.log:(\d+)(?:-(\d+))?:", r.out, re.M)]
         self.assertEqual(r.out.split()[0], "yes")
         self.assertTrue(any(a <= 3 <= b for a, b in spans), r.out)
 

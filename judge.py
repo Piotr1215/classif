@@ -1064,18 +1064,20 @@ def read_items(ap, texts, files):
 
 
 def without_each_line(text, context):
-    """(source, line, text, context) with one non-blank line left out: of the
-    text when it has 2 to MARK_LINES, then of the context when it has 1 to
-    MARK_LINES; None when neither may be marked."""
+    """(source, at, line, text, context) with one non-blank line left out, at
+    its 1-based number in its source: of the text when it has 2 to
+    MARK_LINES, then of the context when it has 1 to MARK_LINES; None when
+    neither may be marked."""
     lines, ctx = text.split("\n"), (context or "").split("\n")
     n, m = sum(1 for l in lines if l.strip()), sum(1 for l in ctx if l.strip())
     if not 1 < n <= MARK_LINES and not 0 < m <= MARK_LINES:
         return None
     out = []
     if 1 < n <= MARK_LINES:
-        out += [("text", l, "\n".join(lines[:i] + lines[i + 1:]), context) for i, l in enumerate(lines) if l.strip()]
+        out += [("text", i + 1, l, "\n".join(lines[:i] + lines[i + 1:]), context)
+                for i, l in enumerate(lines) if l.strip()]
     if 0 < m <= MARK_LINES:
-        out += [("context", l, text, "\n".join(ctx[:i] + ctx[i + 1:]).strip() or None)
+        out += [("context", i + 1, l, text, "\n".join(ctx[:i] + ctx[i + 1:]).strip() or None)
                 for i, l in enumerate(ctx) if l.strip()]
     return out
 
@@ -1094,24 +1096,28 @@ def mark_lines(ask, text, context, base, key="score"):
     if cut is None:
         return None, f"its text has under 2 or over {MARK_LINES} lines and there is no -c of 1 to {MARK_LINES}"
     marks = []
-    for source, line, t, ctx in cut:
+    for source, at, line, t, ctx in cut:
         r = ask(t, ctx)
         if r["label"] is not None and abs(base - r[key]) >= MARK_MIN:
-            marks.append({"from": source, "line": line, "delta": round(base - r[key], 4)})
+            marks.append({"from": source, "at": at, "line": line, "delta": round(base - r[key], 4)})
     return sorted(marks, key=lambda m: -abs(m["delta"]))[:MARKS], None
 
 
 def print_marks(head, what, marks, unmarked):
+    print("\n".join(mark_report(head, what, marks, unmarked)))
+
+
+def mark_report(head, what, marks, unmarked, where=None):
     """mark_lines()'s marks under head, each with how far its removal moved
-    what, or why there are none."""
+    what, and before its line where(mark) or `context: ` for a line of -c;
+    or why there are none."""
     if marks is None:
-        print(f"{head}: not marked, {unmarked}")
-        return
-    print(f"{head}: the lines whose removal moves {what} most")
+        return [f"{head}: not marked, {unmarked}"]
+    out = [f"{head}: the lines whose removal moves {what} most"]
     for m in marks:
-        print(f"  {m['delta']:+.3f}  {'context: ' if m['from'] == 'context' else ''}{short(m['line'], 100)}")
-    if not marks:
-        print("  (no single line moves it)")
+        at = where(m) if where else "context: " if m["from"] == "context" else ""
+        out.append(f"  {m['delta']:+.3f}  {at}{short(m['line'], 100)}")
+    return out + (["  (no single line moves it)"] if not marks else [])
 
 
 def rounded(v, n=4):
@@ -1310,8 +1316,9 @@ def main(argv=None, prog="classif"):
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
                     help="bound all the work; a read cut short exits 3")
     ap.add_argument("-w", "--why", action="store_true",
-                    help="print the lines the answer rests on; the text is read in pieces even when it fits, so "
-                         "it is slower and the answer can differ from the one-call one")
+                    help="print the lines the answer rests on; the answer stays the one it is without -w. Up to "
+                         "60 lines, each is left out and the question asked again; a longer text is read line by "
+                         "line, so it is slower")
     ap.add_argument("--cache", action="store_true",
                     help="save readings, links and the passage index under ~/.cache/classif, so a repeat on the same "
                          "text reuses them; nothing is written to disk without it")
@@ -1354,7 +1361,7 @@ def main(argv=None, prog="classif"):
     if a.enum is not None:
         labels, names, options = enum_labels(ap, a.enum, most=None)
         if labels is None and a.why:
-            ap.error(f"--why reads the text in pieces, which pick among at most 9 options; got {len(names) - 1}")
+            ap.error(f"--why picks among at most 9 options; got {len(names) - 1}")
     else:
         labels = [l.strip() for l in a.labels.split(",") if l.strip()]
         if len(labels) < 2 or len({l.lower() for l in labels}) != len(labels):
@@ -1390,16 +1397,9 @@ def main(argv=None, prog="classif"):
     if a.levels is not None:
         return score_main(a, text, context, *score_labels)
     t0 = time.monotonic()
-    if a.why:
-        # The lines an answer rests on come from reading line by line, so a
-        # short text goes to the reader too instead of one whole read.
-        if not text:
-            ap.error("--why points at lines of the INPUT, and there is none: pass it after the question, pipe it "
-                     "in, use -i FILE or -c")
-        host, model = route()
-        if not host:
-            return unscored("no Ollama host answered: " + ",".join(h for h, _ in hosts()), a.json)
-        return long_input(a, raw, names, options, host, model, t0, out, context, files)
+    if a.why and not text:
+        ap.error("--why points at lines of the INPUT, and there is none: pass it after the question, pipe it "
+                 "in, use -i FILE or -c")
     wait = a.deadline
     if wait is None and "CLASSIF_TIMEOUT" not in os.environ:
         wait = 15 + (len(text) + len(context or "")) / READ_RATE
@@ -1443,6 +1443,7 @@ def main(argv=None, prog="classif"):
     # on: 0.49 and 0.51 would otherwise trigger opposite actions.
     unsure = a.min_p is not None and p[label] < a.min_p
     verdict = f"{show[label]} {p[label]:.2f}" + (" unsure" if unsure else "")
+    why, lines = why_direct(a, raw, text, context, files, labels, options, names, r, t0) if a.why else ({}, [])
     if a.json:
         res = {"label": show[label], "p": {show[l]: round(v, 3) for l, v in p.items()},
                "confidence": round(confidence(p[label], len(labels)), 3),
@@ -1456,13 +1457,16 @@ def main(argv=None, prog="classif"):
             res["p_raw"] = {show[l]: round(v, 3) for l, v in r["p_raw"].items()}
         if yes:
             res["screen"] = {n: round(v, 3) for n, v in yes.items()}
-        dump(res)
+        dump({**res, **why})
     elif not a.gate:
         print(verdict)
     elif sys.stderr.isatty():
         # A silent gate at a prompt reads as broken: say what it decided, on
         # stderr so the data passing through stays clean. Scripts stay silent.
         sys.stderr.write(f"\033[2m{PROG}: {verdict}\033[0m\n")
+    if lines and not a.json:
+        # Under a gate stdout is stderr here, so the passed text stays clean.
+        print("\n".join(lines))
     if unsure:
         return 3
     if show[label] != first:
@@ -1572,10 +1576,54 @@ class Progress:
         self.out.flush()
 
 
-def long_input(a, raw, names, options, host, model, t0, out, context=None, files=()):
-    """Answer through mem.py and report in classif's own terms. A claim's
-    verdict becomes a label: supported yes, contradicted no. Anything the
-    pieces did not settle has no label: insufficient, exit 3, no gate passes."""
+def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
+    """--why on a text that fits: the one-call answer r stands, and this
+    finds what it rests on without replacing it. A text of up to MARK_LINES
+    lines is marked: each line, then each of -c's, is left out and the
+    question asked again on r's host. A longer text is read line by line,
+    and its lines are shown only when that read gives r's answer; otherwise
+    the report says what the read gave. Returns (JSON fields, report lines)."""
+    label = r["label"]
+    name = dict(zip(labels, names or labels))[label]
+    if sum(1 for l in text.split("\n") if l.strip()) > MARK_LINES:
+        got, read, reading = read_pieces(a, raw, names, options, r["host"], r["model"], t0, context, files, True)
+        if reading == name:
+            lines = why_lines(read)
+        elif reading:
+            lines = [f"  (read line by line the answer is {reading}, so no line is shown for {name}; -j has its lines)"]
+        else:
+            lines = [f"  (read line by line: {got['verdict']}, {read['why']})"]
+        return {"read": {**read, "verdict": got["verdict"], "label": reading}}, lines
+
+    def ask(t, ctx):
+        left = a.deadline - (time.monotonic() - t0) if a.deadline is not None else (
+            None if "CLASSIF_TIMEOUT" in os.environ else 15 + (len(t) + len(ctx or "")) / READ_RATE)
+        s = judge(a.question, t, labels, options, model=r["model"], host=r["host"], timeout=left, context=ctx)
+        return s if s["label"] is None else {**s, "score": s["p"][label]}
+
+    marks, unmarked = mark_lines(ask, text, context, r["p"][label])
+    # Marks count lines of the stripped text; the cited numbers are the input's, or each file's own.
+    lead = raw[:len(raw) - len(raw.lstrip())].count("\n")
+    for m in marks or []:
+        if m["from"] == "text":
+            m["at"] += lead
+            if files:
+                e = in_files([{"line": m["at"], "end": m["at"], "text": m["line"]}], raw, files)[0]
+                m.update(file=e["file"], at=e["line"])
+
+    def where(m):
+        if m["from"] == "context":
+            return "context: "
+        return f"{m['file']}:{m['at']}: " if "file" in m else f"{m['at']}: "
+    return ({"marks": marks} if marks is not None else {"unmarked": unmarked},
+            mark_report("why", f"p({name})", marks, unmarked, where))
+
+
+def read_pieces(a, raw, names, options, host, model, t0, context, files, evidence):
+    """mem.py's read of raw in classif's terms: (result, read, label). A
+    claim's verdict becomes a label, supported yes and contradicted no; with
+    -e the option answered, or none. Anything the pieces did not settle has
+    no label. With evidence, read carries the lines the verdict rests on."""
     mem = memory()
     left = None if a.deadline is None else a.deadline - (time.monotonic() - t0)
     if left is not None and left <= 0:
@@ -1586,11 +1634,11 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
             r = mem.answer(types.SimpleNamespace(**globals()), raw, a.question, host, model,
                            names[:-1] if names else None, options[:-1] if options else None,
                            "auto", False, False, left, cache=a.cache, context=context, progress=progress,
-                           evidence=a.why)
+                           evidence=evidence)
         finally:
             if progress:
                 progress.clear()
-    read, first = r["read"], names[0] if names else "yes"
+    read = r["read"]
     if ((read.get("search") or {}).get("index") or {}).get("missing"):
         print(f"{PROG}: ollama pull {EMBED_MODEL} lets a question read the passages closest to it first, "
               "seconds instead of minutes", file=sys.stderr)
@@ -1600,9 +1648,15 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
     if len(files) > 1:
         read["files"] = list(files)
     if names:
-        label = r["label"] if r["verdict"] in ("answered", "none") else None
-    else:
-        label = {"supported": "yes", "contradicted": "no"}.get(r["verdict"])
+        return r, read, r["label"] if r["verdict"] in ("answered", "none") else None
+    return r, read, {"supported": "yes", "contradicted": "no"}.get(r["verdict"])
+
+
+def long_input(a, raw, names, options, host, model, t0, out, context=None, files=()):
+    """Answer through mem.py and report in classif's own terms. Anything the
+    pieces did not settle has no label: insufficient, exit 3, no gate passes."""
+    r, read, label = read_pieces(a, raw, names, options, host, model, t0, context, files, a.why)
+    first = names[0] if names else "yes"
     p = r["p"] if label and r["p"] else None
     unsure = bool(a.min_p is not None and p and p[label] < a.min_p)
     verdict = (label or r["verdict"]) + (f" {p[label]:.2f}" if p else "") + (" unsure" if unsure else "")
@@ -1628,7 +1682,7 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
         print("\n".join(why_lines(read)), file=sys.stderr if a.gate else sys.stdout)
     if label is None or sys.stderr.isatty():
         # What the answer rests on, or why there is none. Scripts with an answer stay silent.
-        line = mem.report(read) if "calls" in read else read["why"]
+        line = memory().report(read) if "calls" in read else read["why"]
         dim = ("\033[2m", "\033[0m") if sys.stderr.isatty() else ("", "")
         sys.stderr.write(f"{dim[0]}{PROG}: {verdict}: {line}{dim[1]}\n")
     if label is None or unsure:
