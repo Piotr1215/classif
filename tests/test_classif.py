@@ -111,9 +111,18 @@ class SpecDirTests(Base):
         r = subprocess.run([str(ROOT / "classif"), "-h"], capture_output=True, text=True,
                            env=dict(os.environ), timeout=10)
         listed = [l.split()[0] for l in r.stdout.split("Commands:")[1].splitlines() if l.startswith("  ")]
-        self.assertEqual(listed, ["tag", "each", "specs", "histogram", "unload"])
+        self.assertEqual(listed, ["tag", "each", "specs", "histogram", "unload", "completion"])
         self.assertIn("For hooks and spec authoring: classify, smoke", r.stdout)
         self.assertTrue(r.stdout.rstrip().endswith("Full documentation <https://github.com/Piotr1215/classif>"))
+
+    def test_classify_help_says_what_a_field_is_and_how_to_pass_a_file(self):
+        r = subprocess.run([str(ROOT / "classif"), "classify", "-h"], capture_output=True, text=True,
+                           env=dict(os.environ), timeout=10)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("SPEC FIELD=VALUE", r.stdout)
+        self.assertIn("classif specs", r.stdout)
+        self.assertIn('"$(cat FILE)"', r.stdout)
+        self.assertRegex(r.stdout, r"Exit:\s+0 for the spec's first label")
 
     def test_rank_names_its_new_name_instead_of_being_asked_as_a_question(self):
         r = subprocess.run([str(ROOT / "classif"), "rank", "Is this a folder?"], capture_output=True, text=True,
@@ -391,6 +400,58 @@ class ClassifyTests(Base):
     def test_no_host_exits_2_and_logs_nothing(self):
         os.environ["CLASSIF_HOSTS"] = DEAD
         self.assertEqual((self.run_classify("query=q", "chunk=c")[0], self.rows()), (2, []))
+
+
+class CompletionTests(Base):
+    def complete(self, *words):
+        r = subprocess.run([str(ROOT / "classif"), "__complete", *words], capture_output=True, text=True,
+                           env=dict(os.environ), timeout=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return [l.split("\t")[0] for l in r.stdout.splitlines()]
+
+    def test_the_first_word_completes_to_the_commands(self):
+        got = self.complete("")
+        for cmd in ("classify", "each", "tag", "specs", "smoke", "histogram", "unload", "completion"):
+            self.assertIn(cmd, got)
+        self.assertNotIn("__complete", got)
+        self.assertEqual(self.complete("cl"), ["classify"])
+
+    def test_a_spec_slot_completes_to_the_spec_names(self):
+        (self.tmp / "specs" / "game-action.json").write_text(json.dumps(SPEC))
+        self.assertEqual(self.complete("classify", ""), ["game-action", "rag-relevance"])
+        self.assertEqual(self.complete("smoke", "ga"), ["game-action"])
+        self.assertEqual(self.complete("histogram", "--hook", "x", "r"), ["rag-relevance"])
+
+    def test_classify_completes_the_fields_its_spec_declares_and_drops_given_ones(self):
+        self.assertEqual(self.complete("classify", "rag-relevance", ""), ["query=", "chunk="])
+        self.assertEqual(self.complete("classify", "rag-relevance", "query=why", ""), ["chunk="])
+        self.assertEqual(self.complete("classify", "rag-relevance", "query=why", "chunk=c", ""), [])
+        self.assertEqual(self.complete("classify", "nope", ""), [])
+
+    def test_a_shell_line_is_split_as_the_shell_would_so_a_quoted_value_stays_one_field(self):
+        line = 'classif classify rag-relevance query="why does it" '
+        self.assertEqual(self.complete("--line", line), ["chunk="])
+        self.assertEqual(self.complete("--line", 'classif classify rag-relevance query="still open'), [])
+
+    def test_flags_come_from_each_parser(self):
+        self.assertIn("--enum", self.complete("is it?", "--e"))
+        self.assertIn("--top", self.complete("each", "-"))
+        self.assertIn("--hook", self.complete("classify", "-"))
+        self.assertNotIn("--labels", self.complete("--"))
+
+    def test_a_file_slot_asks_the_shell_for_files(self):
+        self.assertEqual(self.complete("is it?", "-i", ""), [":files"])
+        self.assertEqual(self.complete("each", "q", "-c", ""), [":files"])
+
+    def test_completion_prints_a_script_each_shell_loads(self):
+        for shell, needle in (("zsh", "#compdef classif"), ("bash", "complete -F _classif classif")):
+            r = subprocess.run([str(ROOT / "classif"), "completion", shell], capture_output=True, text=True,
+                               env=dict(os.environ), timeout=10)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(needle, r.stdout)
+            self.assertIn("__complete", r.stdout)
+        self.assertEqual(self.complete("completion", ""), ["bash", "zsh"])
+
 
 if __name__ == "__main__":
     unittest.main()

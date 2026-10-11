@@ -10,6 +10,8 @@ Short inputs use one whole-input call. A server-confirmed context overflow switc
 
 `classif specs` lists the saved classifier definitions, the fields each wants and the file it is read from. `classif classify SPEC field=value ...` and `classif smoke SPEC` use them. Other integration subcommands remain available through `classif --help`. If a question equals a subcommand word, put it after `--`, for example `classif -- unload "source text"`.
 
+`classif completion zsh` and `classif completion bash` print a tab completion script: `source <(classif completion zsh)` in `~/.zshrc` after `compinit`, or save it as `_classif` in a directory on `fpath`. On each TAB the script asks classif itself for the candidates, so commands, flags, spec names and each spec's `FIELD=` slots stay current without generating the script again.
+
 | Flag | Meaning |
 | --- | --- |
 | `-e OPTION` | An answer to pick: a name, or `name=description`. The model reads the description as when to pick that option; only the name is printed. Repeat `-e` for each option, or list names with commas or newlines. Any number of options, plus `none`; the first exits 0. Past nine, each option is first asked alone (`QUESTION Is the answer NAME (description)?`, yes or no), and the three likeliest, in the order given, go to one pick; see [past nine options](#past-nine-options). A description runs to the next `name=`, so it may hold commas. Unquoted, its words run to the next option or quoted value, so a one-word text goes before `-e`. Without `-e` the answers are `yes`, `no` and `unknown`. |

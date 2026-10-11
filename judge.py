@@ -902,10 +902,7 @@ def tag_blocks(argv):
     return questions, rest
 
 
-def tag_main(argv, prog="classif tag"):
-    """classif tag: several questions about one text, read once."""
-    global PROG
-    PROG = prog
+def tag_parser(prog="classif tag"):
     ap = argparse.ArgumentParser(
         prog=prog, formatter_class=Help, epilog=TAG_EPILOG,
         allow_abbrev=False,
@@ -933,6 +930,14 @@ def tag_main(argv, prog="classif tag"):
     ap.add_argument("-t", "--min-p", type=float, metavar="P",
                     help="mark an answer under this p unsure and exit 3")
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS", help="bound the call")
+    return ap
+
+
+def tag_main(argv, prog="classif tag"):
+    """classif tag: several questions about one text, read once."""
+    global PROG
+    PROG = prog
+    ap = tag_parser(prog)
     questions, rest = tag_blocks(argv)
     a = ap.parse_args(rest)
     if a.enum or a.levels is not None:
@@ -1149,10 +1154,7 @@ def grade_note(answer):
             f"the likeliest level is {short(legend[str(m)], 40)}, at {p[m]:.0%}; -w for all\033[0m")
 
 
-def each_main(argv, prog="classif each"):
-    """classif each: one question asked of each item, best first."""
-    global PROG
-    PROG = prog
+def each_parser(prog="classif each"):
     ap = argparse.ArgumentParser(
         prog=prog, formatter_class=Help, epilog=EACH_EPILOG,
         usage="%(prog)s [options] QUESTION ITEM ...\n       cmd | %(prog)s [options] QUESTION\n"
@@ -1178,6 +1180,14 @@ def each_main(argv, prog="classif each"):
                     help="for the top pick, the lines of its text and of -c whose removal moves its score most. One "
                          "call per line, so a text or context over 60 lines is not marked")
     ap.add_argument("-j", "--json", action="store_true", help="print the items as JSON")
+    return ap
+
+
+def each_main(argv, prog="classif each"):
+    """classif each: one question asked of each item, best first."""
+    global PROG
+    PROG = prog
+    ap = each_parser(prog)
     args, follower, _ = attach_levels(join_descriptions(argv))
     a = ap.parse_intermixed_args(args)
     bare_score_check(ap, follower, a.question)
@@ -1274,9 +1284,7 @@ def each_main(argv, prog="classif each"):
     return 0
 
 
-def main(argv=None, prog="classif"):
-    global PROG
-    PROG = prog
+def main_parser(prog="classif"):
     # INPUT comes one of three ways; the usage shows all three, so -i reads as filling that slot.
     ap = argparse.ArgumentParser(prog=prog, description="\n\n".join(__doc__.split("\n\n")[:2]), epilog=EPILOG,
                                  formatter_class=Help, usage="%(prog)s [options] QUESTION [INPUT]\n"
@@ -1323,6 +1331,13 @@ def main(argv=None, prog="classif"):
                     help="save readings, links and the passage index under ~/.cache/classif, so a repeat on the same "
                          "text reuses them; nothing is written to disk without it")
     ap.add_argument("extra", nargs="*", help=argparse.SUPPRESS)
+    return ap
+
+
+def main(argv=None, prog="classif"):
+    global PROG
+    PROG = prog
+    ap = main_parser(prog)
     # Intermixed: positionals may follow options, as in `classif "q?" -e a,b "text"`.
     given = sys.argv[1:] if argv is None else list(argv)
     joined = join_descriptions(given)
