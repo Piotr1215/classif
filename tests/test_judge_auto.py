@@ -287,7 +287,7 @@ class AutoInputTests(unittest.TestCase):
         return chat([("yes" if "access denied" in body["messages"][1]["content"] else "no", -0.01)])
 
     SHORT = "Note 0: routine check passed.\nDeployment failure: access denied.\nNote 2: routine check passed.\n"
-    # One line past what -w marks: a text this long is read line by line instead.
+    # Past 8 lines -w narrows: it leaves lines out in runs, not one at a time.
     LONG = "".join(f"Note {i}: routine check passed.\n" for i in range(61))
     MARKED = ("why: the lines whose removal moves p(yes) most", "  +1.000  2: Deployment failure: access denied.")
 
@@ -341,7 +341,7 @@ class AutoInputTests(unittest.TestCase):
         fake = self.serve(self.settled)
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text="Note 0: all fine.\n")
         self.assertEqual(result.stdout.splitlines(), [
-            "no 1.00", "why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 to 60"])
+            "no 1.00", "why: not marked, its text has one line and there is no -c"])
 
     def test_why_marks_the_option_that_won(self):
         fake = self.serve(lambda body, n: chat([("2" if "payment was reversed" in body["messages"][1]["content"] else "1",
@@ -352,65 +352,42 @@ class AutoInputTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), ["reversed 1.00", "why: the lines whose removal moves p(reversed) most",
                                                       "  +1.000  2: That payment was reversed."])
 
-    def test_why_past_the_marked_lines_reads_line_by_line_and_prints_the_lines(self):
-        fake = self.serve(self.witness)
-        text = self.LONG.replace("Note 1: routine check passed.", "Deployment failure: access denied.")
+    def test_why_on_a_long_text_narrows_to_the_line_in_a_few_calls(self):
+        fake = self.serve(self.settled)
+        text = self.LONG.replace("Note 37: routine check passed.", "Deployment failure: access denied.")
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text=text)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["yes 1.00", "  2: Deployment failure: access denied."])
-        read = json.loads(self.call(fake, "-j", "--why", "An entry reports a deployment failure.", text=text).stdout)
-        self.assertEqual((read["mode"], read["read"]["label"], read["read"]["evidence"][0]["line"]), ("direct", "yes", 2))
+        self.assertEqual(result.stdout.splitlines(), ["yes 1.00", self.MARKED[0],
+                                                      "  +1.000  38: Deployment failure: access denied."])
+        # The answer, then 4 runs of 16 lines, 4 of 4 and 4 single lines: 13 calls where one per line took 62.
+        self.assertEqual((len(fake.requests), self.read_line_by_line(fake)), (1 + 12, []))
 
-    def test_why_past_the_marked_lines_never_replaces_the_answer(self):
-        # The one call says yes; the line read then finds nothing, or a breaking line. The yes stands both times.
-        for found, judged, report in (
-                ("unrelated", "unknown", "  (read line by line: insufficient, "),
-                ("breaks", "no", "  (read line by line the answer is no, so no line is shown for yes; -j has its lines)")):
-            def respond(body, n, found=found, judged=judged):
-                user = body["messages"][1]["content"]
-                if n == 1:
-                    return chat([("yes", -0.01)])
-                if "Which kind is it?" in user:
-                    return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
-                if "Taken alone" in user or "Does this passage" in user:
-                    return chat([(found if "Note 7:" in user else "unrelated", -0.01)])
-                return chat([(judged, -0.01)])
-            result = self.call(self.serve(respond), "--why", "An entry reports a deployment failure.", text=self.LONG)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            verdict, line = result.stdout.splitlines()
-            self.assertEqual(verdict, "yes 1.00")
-            self.assertTrue(line.startswith(report), line)
-
-    def test_why_on_a_whole_text_question_prints_the_lines_it_rests_on(self):
-        # The root call files the question under the whole text, answered from a
-        # sample; --why must still read those lines and print the one that fits.
-        def respond(body, n):
-            user = body["messages"][1]["content"]
-            if "Which kind is it?" in user:
-                return chat([(re.search(r"(\d)=it is about the document as a whole", user).group(1), -0.01)])
-            if "Taken alone" in user or "Does this passage" in user:
-                return chat([("fits" if "Hello there" in user else "unrelated", -0.01)])
-            return chat([("yes", -0.01)])
-        fake = self.serve(respond)
-        text = "Subject: hi\nHello there, how are you?\nRegards\n" + self.LONG
-        result = self.call(fake, "--why", "Is this a greeting?", text=text)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["yes 1.00", "  2: Hello there, how are you?"])
-        read = json.loads(self.call(fake, "-j", "--why", "Is this a greeting?", text=text).stdout)["read"]
-        self.assertEqual((read["kind"]["kind"], read["basis"], read["lines"]["verdict"]), ("whole", "sample", "supported"))
-
-    def test_why_with_options_past_the_marked_lines_prints_the_line_not_the_passage(self):
-        def respond(body, n):
-            user = body["messages"][1]["content"]
-            if "Going only by this passage" in user:
-                return chat([("2" if "That payment was reversed." in user else "0", -0.01)])
-            return chat([("2", -0.01)])
-        fake = self.serve(respond)
-        text = ("Invoice INV-42 was issued.\nIt was sent to the customer.\nThat payment was reversed.\n"
-                "The customer was notified.\n" + self.LONG)
+    def test_why_with_options_on_a_long_text_marks_the_line_for_the_option_that_won(self):
+        fake = self.serve(lambda body, n: chat([("2" if "That payment was reversed." in body["messages"][1]["content"]
+                                                 else "1", -0.01)]))
+        text = "Invoice INV-42 was issued.\nIt was sent to the customer.\nThat payment was reversed.\n" + self.LONG
         result = self.call(fake, "--why", "-e", "paid,reversed", "What is the status?", text=text)
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["reversed 1.00", "  3: That payment was reversed."])
+        self.assertEqual(result.stdout.splitlines(), ["reversed 1.00", "why: the lines whose removal moves p(reversed) most",
+                                                      "  +1.000  3: That payment was reversed."])
+
+    def test_terminal_escapes_never_reach_the_model_and_a_gate_passes_them_on(self):
+        fake = self.serve(self.settled)
+        text = "\x1b[31mNote 0\x1b[0m: routine.\nDeployment \x1b]8;;http://x\x1b\\failure\x1b]8;;\x1b\\: access denied.\n"
+        rule = Path(self.tmp.name) / "rule.txt"
+        rule.write_text("\x1b[32mRule\x1b[0m: be brief.\n")
+        result = self.call(fake, "-p", "-c", "\x1b[1mPolicy\x1b[0m: report failures.", "-c", str(rule),
+                           "An entry reports a deployment failure.", text=text)
+        self.assertEqual((result.returncode, result.stdout), (0, text), result.stderr)
+        user = fake.requests[0]["messages"][1]["content"]
+        self.assertIn("Context:\nPolicy: report failures.\n\nRule: be brief.\n\nText:\nNote 0: routine.\n"
+                      "Deployment failure: access", user)
+
+    def test_why_counts_lines_across_escapes_that_hold_or_end_a_line(self):
+        fake = self.serve(self.settled)
+        text = "\x1b[0m\nNote 1: \x1b]2;a title\nover two lines\x07all fine.\nDeployment failure: access denied.\n"
+        result = self.call(fake, "--why", "An entry reports a deployment failure.", text=text)
+        self.assertEqual(result.stdout.splitlines()[1:], [self.MARKED[0], self.MARKED[1].replace("2:", "4:")])
 
     def test_why_with_only_c_points_at_lines_of_c(self):
         # With no INPUT, -c is the text judged, so its lines are the ones cited.

@@ -808,6 +808,18 @@ def silent_socket():
         return False
 
 
+# Terminal escapes: colours and cursor moves (CSI), hyperlinks and titles
+# (OSC), and the two-byte rest. A coloured `ls` writes them into a pipe.
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def plain(s):
+    """s without terminal escapes, each line where it was, so a cited line
+    number still holds. They mean nothing to the model and cost it tokens:
+    wttr.in's colours were 1,828 of its 3,073."""
+    return ANSI.sub(lambda m: "\n" * m[0].count("\n"), s)
+
+
 def read_stdin():
     """stdin's text, or "" from a silent socket. head -c cuts mid-character
     and binaries are not UTF-8 at all; neither should crash a loop over files."""
@@ -822,23 +834,24 @@ def read_context(ap, values):
 
 
 def context_source(ap, value):
-    """One -c's text, stripped: the file it names, <(cmd) included, else the
-    value itself. A value that reads as a file name (one word holding a
-    slash or ending in an extension) but names no file is a usage error, so
-    a mistyped path never becomes the context. Empty is too."""
+    """One -c's text, stripped, terminal escapes too: the file it names,
+    <(cmd) included, else the value itself. A value that reads as a file
+    name (one word holding a slash or ending in an extension) but names no
+    file is a usage error, so a mistyped path never becomes the context.
+    Empty is too."""
     if os.path.exists(value) or (not re.search(r"\s", value) and re.search(r"/|\.\w{1,5}$", value)):
         try:
             with open(value, "rb") as fh:
-                context = fh.read().decode("utf-8", errors="replace").strip()
+                context = plain(fh.read().decode("utf-8", errors="replace")).strip()
         except OSError as e:
             ap.error(f"-c {value}: {e.strerror}. -c takes a file, <(cmd) or the text itself, and this reads as a "
                      "file name")
         if not context:
             ap.error(f"-c {value}: the file is empty")
         return context
-    if not value.strip():
+    if not plain(value).strip():
         ap.error("-c is empty")
-    return value.strip()
+    return plain(value).strip()
 
 
 def read_files(ap, groups):
@@ -981,7 +994,7 @@ def tag_main(argv, prog="classif tag"):
     if not raw.strip() and context and a.files is None and not piped():
         # Given no input at all, -c is what the questions are asked of.
         raw, context, a.context = context, None, None
-    text = raw.strip()
+    text = plain(raw).strip()
     if not text:
         ap.error("no input: pipe the text in or pass -i FILE")
     wait = a.deadline
@@ -1028,14 +1041,10 @@ Output: one row per item, best first: the score, the answer with its p, the item
     task export | jq -r '.[].description' | classif each "What should happen to this task?" -c goals.md \\
         -e "prioritize=do it this week" -e "defer=worth doing, not now" -e "drop=serves no goal"
     classif each "Does this offer pay above market?" -c market.md -i offers/*.md"""
-MARK_LINES = 60     # one call per line, so longer texts and contexts are not marked
 MARK_MIN = 0.005    # a smaller move is noise: identical runs differ by about 0.001
 MARKS = 3
+SPLIT = 4           # -w leaves lines out in this many runs, then splits the one that moved most
 
-
-# Terminal escapes: colours and cursor moves (CSI), hyperlinks and titles
-# (OSC), and the two-byte rest. A coloured `ls` writes them into a pipe.
-ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
 def items(ap, texts, files):
@@ -1068,23 +1077,22 @@ def read_items(ap, texts, files):
     return out
 
 
-def without_each_line(text, context):
-    """(source, at, line, text, context) with one non-blank line left out, at
-    its 1-based number in its source: of the text when it has 2 to
-    MARK_LINES, then of the context when it has 1 to MARK_LINES; None when
-    neither may be marked."""
-    lines, ctx = text.split("\n"), (context or "").split("\n")
-    n, m = sum(1 for l in lines if l.strip()), sum(1 for l in ctx if l.strip())
-    if not 1 < n <= MARK_LINES and not 0 < m <= MARK_LINES:
-        return None
-    out = []
-    if 1 < n <= MARK_LINES:
-        out += [("text", i + 1, l, "\n".join(lines[:i] + lines[i + 1:]), context)
-                for i, l in enumerate(lines) if l.strip()]
-    if 0 < m <= MARK_LINES:
-        out += [("context", i + 1, l, text, "\n".join(ctx[:i] + ctx[i + 1:]).strip() or None)
-                for i, l in enumerate(ctx) if l.strip()]
-    return out
+def line_picks(text, context):
+    """(source, at, line) for each line -w may leave out, at its 1-based
+    number in its source: the text's non-blank lines when it has two or
+    more, then -c's."""
+    picks = [("text", i + 1, l) for i, l in enumerate(text.split("\n")) if l.strip()]
+    return (picks if len(picks) > 1 else []) + [
+        ("context", i + 1, l) for i, l in enumerate((context or "").split("\n")) if l.strip()]
+
+
+def without(text, context, run):
+    """(text, context) with run's lines left out; a context left empty is None."""
+    gone = {(source, at) for source, at, _ in run}
+
+    def keep(source, s):
+        return "\n".join(l for i, l in enumerate(s.split("\n")) if (source, i + 1) not in gone)
+    return keep("text", text), (keep("context", context).strip() or None) if context else context
 
 
 def short(s, n=60):
@@ -1093,18 +1101,31 @@ def short(s, n=60):
 
 
 def mark_lines(ask, text, context, base, key="score"):
-    """(marks, why unmarked): the MARKS lines of text and context whose
+    """(marks, why unmarked): up to MARKS lines of text and context whose
     removal moves ask()'s key, its score unless named, from base by MARK_MIN
-    or more, the largest move first, each asked again without its line; or
-    (None, why) when neither has a line count without_each_line marks."""
-    cut = without_each_line(text, context)
-    if cut is None:
-        return None, f"its text has under 2 or over {MARK_LINES} lines and there is no -c of 1 to {MARK_LINES}"
-    marks = []
-    for source, at, line, t, ctx in cut:
-        r = ask(t, ctx)
-        if r["label"] is not None and abs(base - r[key]) >= MARK_MIN:
-            marks.append({"from": source, "at": at, "line": line, "delta": round(base - r[key], 4)})
+    or more, the largest move first; or (None, why) when there is no line
+    to leave out. The lines are found by narrowing, not one by one: they are
+    left out in SPLIT runs, each asked again, and the run that moved the
+    score most is split the same way, down to single lines; a run of at most
+    2 * SPLIT lines is left out a line at a time, as exact and no dearer.
+    On five texts with one deciding line it marked the same top line as one
+    call per line, in 6 to 12 calls where that took up to 30, and a 39-line
+    weather report took 10 or 11 calls and 8 to 13 s where that took 39 and
+    33 s. A line in a run that never moves the score, or whose move another
+    line of its run cancels, goes unseen; splitting the top two runs as well
+    found no top line this missed."""
+    marks, run = [], line_picks(text, context)
+    if not run:
+        return None, "its text has one line and there is no -c"
+    while run:
+        size, moved = 1 if len(run) <= 2 * SPLIT else -(-len(run) // SPLIT), []
+        for part in (run[i:i + size] for i in range(0, len(run), size)):
+            r = ask(*without(text, context, part))
+            if r["label"] is not None and abs(base - r[key]) >= MARK_MIN:
+                moved.append((round(base - r[key], 4), part))
+        marks += [{"from": p[0][0], "at": p[0][1], "line": p[0][2], "delta": d} for d, p in moved if len(p) == 1]
+        wide = [(abs(d), p) for d, p in moved if len(p) > 1]
+        run = max(wide, key=lambda m: m[0])[1] if wide else None
     return sorted(marks, key=lambda m: -abs(m["delta"]))[:MARKS], None
 
 
@@ -1122,7 +1143,7 @@ def mark_report(head, what, marks, unmarked, where=None):
     for m in marks:
         at = where(m) if where else "context: " if m["from"] == "context" else ""
         out.append(f"  {m['delta']:+.3f}  {at}{short(m['line'], 100)}")
-    return out + (["  (no single line moves it)"] if not marks else [])
+    return out + (["  (no line found whose removal moves it)"] if not marks else [])
 
 
 def rounded(v, n=4):
@@ -1177,8 +1198,8 @@ def each_parser(prog="classif each"):
                     help="items, one per file, each named by its file name")
     ap.add_argument("-k", "--top", type=int, metavar="N", help="show only the top N")
     ap.add_argument("-w", "--why", action="store_true",
-                    help="for the top pick, the lines of its text and of -c whose removal moves its score most. One "
-                         "call per line, so a text or context over 60 lines is not marked")
+                    help="for the top pick, the lines of its text and of -c whose removal moves its score most, "
+                         "found by leaving lines out in runs and narrowing: about 10 calls for 40 lines")
     ap.add_argument("-j", "--json", action="store_true", help="print the items as JSON")
     return ap
 
@@ -1324,9 +1345,9 @@ def main_parser(prog="classif"):
     ap.add_argument("-d", "--deadline", type=float, metavar="SECONDS",
                     help="bound all the work; a read cut short exits 3")
     ap.add_argument("-w", "--why", action="store_true",
-                    help="print the lines the answer rests on; the answer stays the one it is without -w. Up to "
-                         "60 lines, each is left out and the question asked again; a longer text is read line by "
-                         "line, so it is slower")
+                    help="print the lines the answer rests on; the answer stays the one it is without -w. Lines "
+                         "are left out in runs and the question asked again, narrowing to the lines that move it: "
+                         "about 10 calls for 40 lines")
     ap.add_argument("--cache", action="store_true",
                     help="save readings, links and the passage index under ~/.cache/classif, so a repeat on the same "
                          "text reuses them; nothing is written to disk without it")
@@ -1394,7 +1415,7 @@ def main(argv=None, prog="classif"):
             raw = ""
         else:
             ap.error("no input: pass a question, a text, or both")
-    text = raw.strip()
+    text = plain(raw).strip()
     if not text and len(joined) < len(given):
         # A one-word text after an unquoted description reads as its last word.
         ap.error("the words after an unquoted -e name= were read as its description, and no text is left. "
@@ -1593,22 +1614,11 @@ class Progress:
 
 def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
     """--why on a text that fits: the one-call answer r stands, and this
-    finds what it rests on without replacing it. A text of up to MARK_LINES
-    lines is marked: each line, then each of -c's, is left out and the
-    question asked again on r's host. A longer text is read line by line,
-    and its lines are shown only when that read gives r's answer; otherwise
-    the report says what the read gave. Returns (JSON fields, report lines)."""
+    finds what it rests on without replacing it, by leaving lines of the
+    text and of -c out and asking again on r's host (mark_lines). Returns
+    (JSON fields, report lines)."""
     label = r["label"]
     name = dict(zip(labels, names or labels))[label]
-    if sum(1 for l in text.split("\n") if l.strip()) > MARK_LINES:
-        got, read, reading = read_pieces(a, raw, names, options, r["host"], r["model"], t0, context, files, True)
-        if reading == name:
-            lines = why_lines(read)
-        elif reading:
-            lines = [f"  (read line by line the answer is {reading}, so no line is shown for {name}; -j has its lines)"]
-        else:
-            lines = [f"  (read line by line: {got['verdict']}, {read['why']})"]
-        return {"read": {**read, "verdict": got["verdict"], "label": reading}}, lines
 
     def ask(t, ctx):
         left = a.deadline - (time.monotonic() - t0) if a.deadline is not None else (
@@ -1618,7 +1628,8 @@ def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
 
     marks, unmarked = mark_lines(ask, text, context, r["p"][label])
     # Marks count lines of the stripped text; the cited numbers are the input's, or each file's own.
-    lead = raw[:len(raw) - len(raw.lstrip())].count("\n")
+    body = plain(raw)
+    lead = body[:len(body) - len(body.lstrip())].count("\n")
     for m in marks or []:
         if m["from"] == "text":
             m["at"] += lead

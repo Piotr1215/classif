@@ -54,6 +54,12 @@ class TagTests(unittest.TestCase):
         self.assertIn("kind: Options: 1=asks me (wants something from me), 2=fyi, 3=newsletter, 0=none of these.",
                       user)
 
+    def test_terminal_escapes_in_the_text_never_reach_the_model(self):
+        fake = self.serve(URGENT_ASK)
+        r = run(fake.host, "tag", *URGENCY, *KIND, stdin="\x1b[1;31mProd login is down\x1b[0m. Can you roll back now?")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Prod login is down. Can you roll back now?", fake.requests[0]["messages"][-1]["content"])
+
     def test_a_question_with_no_e_is_yes_no_or_unknown(self):
         fake = self.serve(keyed('{"', "is it spam?", '":', ("2", {"2": 0.9, "1": 0.1}), "}"))
         r = run(fake.host, "tag", "is it spam?", stdin=MAIL)

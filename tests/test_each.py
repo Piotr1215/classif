@@ -137,9 +137,24 @@ class EachTests(unittest.TestCase):
         fake = self.serve()
         r = run(fake.host, "each", "Good?", "one\ntwo", "-w")
         self.assertTrue(r.stdout.endswith("why one two: the lines whose removal moves p(yes) most\n"
-                                          "  (no single line moves it)\n"))
+                                          "  (no line found whose removal moves it)\n"))
         r = run(fake.host, "each", "Good?", "one line", "-w")
         self.assertIn("why one line: not marked", r.stdout)
+
+    def test_why_past_eight_lines_narrows_into_the_run_that_moved_most(self):
+        fake = self.serve(("key fact", 0.3), ("minor", 0.1))
+        item = "\n".join(f"note {i}" for i in range(20)).replace("note 13", "key fact").replace("note 2", "minor")
+        r = run(fake.host, "each", "Take it?", item, "-w")
+        self.assertTrue(r.stdout.endswith("p(yes) most\n  +0.300  key fact\n"), r.stdout)
+        # One score, then 4 runs of 5 lines and the 5 lines of the run that moved most: 10 calls, not 1 + 20.
+        self.assertEqual(len(fake.requests), 1 + 4 + 5)
+
+    def test_why_QUIRK_two_lines_that_cancel_in_one_run_go_unseen(self):
+        # DISCOVERED: past 8 lines, lines 1 to 3 are left out together; their moves cancel, so that run is never split.
+        fake = self.serve(("raised", 0.4), ("lowered", -0.4))
+        r = run(fake.host, "each", "High risk?", "risk raised\nrisk lowered\n" + "\n".join(f"note {i}" for i in range(10)),
+                "-w")
+        self.assertTrue(r.stdout.endswith("  (no line found whose removal moves it)\n"), r.stdout)
 
     def test_an_unscored_item_is_left_out_with_a_note_and_nothing_scored_exits_2(self):
         fake = self.serve()

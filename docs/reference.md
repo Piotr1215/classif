@@ -6,7 +6,7 @@ See the [README](../README.md) for the quick start and [architecture](architectu
 
 `classif QUESTION [TEXT]` scores one question. Without `TEXT`, it reads stdin; at a terminal with no piped input, it scores the question alone. With no arguments at all it is a usage error, exit 2. `-i FILE` reads a file and records its name. A positional `TEXT` remains literal text even if it names an existing file.
 
-Short inputs use one whole-input call. A server-confirmed context overflow switches default yes/no/unknown questions and enums to the external-memory executor. Connection failures, other HTTP errors and inadequate label mass stay unscored.
+Short inputs use one whole-input call. Terminal escapes, the colours and links a coloured command writes into a pipe, are dropped from the input and from `-c` before the model reads them: they were 1,828 of the 3,073 tokens of wttr.in's report. `-p` passes the input on as it came. Past the window the input is read as it came, escapes and all, so `read.sources` stay slices of it. A server-confirmed context overflow switches default yes/no/unknown questions and enums to the external-memory executor. Connection failures, other HTTP errors and inadequate label mass stay unscored.
 
 `classif specs` lists the saved classifier definitions, the fields each wants and the file it is read from. `classif classify SPEC field=value ...` and `classif smoke SPEC` use them. Other integration subcommands remain available through `classif --help`. If a question equals a subcommand word, put it after `--`, for example `classif -- unload "source text"`.
 
@@ -22,7 +22,7 @@ Short inputs use one whole-input call. A server-confirmed context overflow switc
 | `-c TEXT` | Background the question needs, a policy, a reference or the date: a file, `<(cmd)`, or the text itself. Repeat `-c` to join several sources, in order, each separated by a blank line: `-c policy.md -c <(date)`. `-j` lists them as `context`. A value that reads as a file name (one word with a slash or an extension) but names no file is refused, so a typo never becomes the context. With no input, `-c` is the text judged, so `-c "$(cmd)"` alone works like `cmd \| classif`. "No input" means stdin is a terminal or `/dev/null`: a script, hotkey or editor plugin that starts classif with an open pipe on stdin leaves it waiting for that pipe, so end such a call with `</dev/null` or pipe the text in. A socket on stdin that sends nothing for a second counts as no input: Claude Code's `!` leaves one open when the command holds a `<`, even a quoted one. With an input it is read before the input on every reader and judge call, never on a link call. Must fit the window with the input or with one passage. On a short input it is the same decision as putting the file first in `-i`. |
 | `--cache` | Save readings, links and the passage index under `$XDG_CACHE_HOME/classif/mem.sqlite` (`~/.cache/classif/mem.sqlite`) and reuse them on a repeat of the same text, claim or model. Without it nothing is written to disk and every run starts cold. |
 | `-d SECONDS` | Limit the whole-input attempt, the model lookup and the bounded reads together; must be above 0. |
-| `-w` | Print the lines the answer rests on after the verdict, or on stderr under `-p`. The answer, its p and the exit code stay what they are without `-w`. A text that fits the window and has up to 60 lines is marked as `each -w` marks its top pick: each non-blank line of the text (2 to 60 lines), then of `-c` (1 to 60 lines), is left out and the question asked again, and up to three lines whose removal moves the answer's p by 0.005 or more are printed as `  +0.426  LINE: text` (`FILE:LINE` with `-i`, `context:` for a line of `-c`), `+` for a line that raised it. That is one call per line on the whole text: 41 lines of 8.6 KB took 66 s here. `-j` carries them as `marks`, each with `from`, `at`, `line` and `delta`, plus `file` with `-i`; a one-line text with no `-c` is not marked and says so. A longer text that fits is read line by line as one past the window is, and its lines print as `  LINE: text` only when that read gives the same answer; otherwise one line says what the read gave, and `-j` carries the read as `read`, with its `verdict`, `label` and `evidence`. In that read, and past the window, a yes or no rests on the lines that, read one at a time, fit or break the claim among those it was judged from, including an answer from a search or a sample. With `-e`, each passage that voted for the answer is narrowed to a run that gives that answer alone: the first half that still gives it is halved again, and a passage that gives it only as a whole is printed whole. When no line reads for or against the answer, that is printed instead; `read.lines` reports the extra calls. Memory results always carry the lines in `read.evidence` as 1-based `line`, `end` and `text`, plus `file` with `-i`, its line numbers that file's own. |
+| `-w` | Print the lines the answer rests on after the verdict, or on stderr under `-p`. The answer, its p and the exit code stay what they are without `-w`. On a text that fits the window, lines of the text (when it has 2 or more) and of `-c` are left out and the question asked again, as `each -w` marks its top pick: up to 8 lines one at a time, more in four runs, the run that moved the answer's p most split again the same way down to single lines. That is about 10 calls for 40 lines: 11 calls and 8 s on a 41-line weather report. Up to three lines whose removal moves the p by 0.005 or more print as `  +0.426  LINE: text` (`FILE:LINE` with `-i`, `context:` for a line of `-c`), `+` for a line that raised it. A line in a run that never moves the p, or whose move another line of its run cancels, is not found. `-j` carries them as `marks`, each with `from`, `at`, `line` and `delta`, plus `file` with `-i`; a one-line text with no `-c` is not marked and says so. Past the window, a yes or no rests on the lines that, read one at a time, fit or break the claim among those it was judged from, including an answer from a search or a sample. With `-e`, each passage that voted for the answer is narrowed to a run that gives that answer alone: the first half that still gives it is halved again, and a passage that gives it only as a whole is printed whole. When no line reads for or against the answer, that is printed instead; `read.lines` reports the extra calls. Memory results always carry the lines in `read.evidence` as 1-based `line`, `end` and `text`, plus `file` with `-i`, its line numbers that file's own. |
 
 Exit 0 means the first label won; exit 1 means another label won. Exit 2 means unscored, including connection failure, inadequate label mass or a context overflow of `-c` alone. Exit 3 means insufficient evidence or coverage, a deadline cut, or an unmet supplied threshold. With `-s`, a grade under `-t` exits 1 instead. A memory result that is insufficient has no output label and passes no gate.
 
@@ -75,7 +75,7 @@ p(yes)  answer     item
 - The score is p(yes), or with `-e` p of the first option; the answer column shows what each item got. `-e` takes any number of options plus `none`, as for a question; past nine, each item's options are screened, and its score is the first option's p(yes) from its own call.
 - `-c` is read before every item. With no items and no pipe, `-c` is the one item, as for a question.
 - `-k N` prints the top N. `-j` prints `{question, options, context, items, unscored, model, host}`, each item with `name`, `score`, `label`, `p` and, under `-w`, `marks`.
-- `-w` marks the top pick: each non-blank line of its text (2 to 60 lines), then of `-c` (1 to 60 lines), is left out and the question asked again. Up to three lines whose removal moves the score by 0.005 or more are printed, `+` for a line that raised it. A mark is sensitivity from the same one-call reading as the answer, as `--why` gives on a question of up to 60 lines.
+- `-w` marks the top pick: the non-blank lines of its text (when it has 2 or more), then of `-c`, are left out and the question asked again, up to 8 lines one at a time, more in four runs with the run that moved the score most split again down to single lines. Up to three lines whose removal moves the score by 0.005 or more are printed, `+` for a line that raised it. A mark is sensitivity from the same one-call reading as the answer, as `--why` gives on a question.
 - Exit 0 when some item was scored, 2 when none could be. An item that cannot be scored, such as one past the window, is left out with a note on stderr and in `-j`'s `unscored`.
 
 Each call is the direct path above with its own timeout; items are judged one after another on one host.
@@ -89,15 +89,16 @@ classif "How restrictive is this license for third-party code shipped inside a c
   -i /usr/share/common-licenses/MPL-2.0 -s "permissive=nothing to keep or share" -s "notice=keep the copyright notice" \
   -s "file-copyleft=changes to its files must be shared" -s "library-copyleft=changes to the library must be shared" \
   -s "strong-copyleft=the whole program must be shared" -w
-file-copyleft 0.51
-where the probability went, confidence 0.84
+file-copyleft 0.50
+where the probability went, confidence 0.86
   grade  chance  level
    0.00      1%  permissive
-   0.25      7%  notice
-   0.50     83%  file-copyleft
-   0.75      9%  library-copyleft
+   0.25      6%  notice
+   0.50     85%  file-copyleft
+   0.75      7%  library-copyleft
    1.00      1%  strong-copyleft
-why: not marked, its text has under 2 or over 60 lines and there is no -c of 1 to 60
+why: the lines whose removal moves the grade most
+  (no line found whose removal moves it)
 ```
 
 ```sh
@@ -109,7 +110,7 @@ very 0.81
 - At a terminal a dim line on stderr follows, saying what 0 and 1 are and which level the model gave the most, as `classif: 0 is not, 1 is extremely; the likeliest level is not, at 52%; -w for all`. A pipe, a file or `$(...)` never gets it, and `-w` and `-j` print none.
 - The confidence is Jev's Score formula: 1 less the probability-weighted distance from the likeliest level, over the same for an even spread, floored at 0. Probability on a neighbouring level lowers it less than probability at the far end. `-w` and `-j` show it.
 - `-j` carries Jev's answer fields, `type`, `score`, `confidence`, `legend` and `probabilities`, keyed by level number, plus `level` and `grade`, beside `logp`, `mass`, `T`, `model`, `host` and `ms`.
-- `-w` prints where the probability went under the confidence, one line per level: its place on the grade, its chance as a percent and its name, then the lines of the text (2 to 60 lines) and of `-c` (1 to 60 lines) whose removal moves the grade most, as `each -w` marks them.
+- `-w` prints where the probability went under the confidence, one line per level: its place on the grade, its chance as a percent and its name, then the lines of the text and of `-c` whose removal moves the grade most, as `each -w` marks them.
 - `-t G` gates on the printed grade: under G the answer exits 1, so `classif "how urgent is this?" -s -t 0.8 && page-me` fires only on a grade of 0.8 or more. The confidence does not gate; read it from `-j` to act on it. `-p` is refused, since a score has no winner to pass the input on. The input must fit the window in one call.
 - `classif each -s` sorts items by grade, highest first, in a `grade level item` table; `-j` items carry `level`, `grade`, `score`, `confidence` and `probabilities`, with the level names once as `legend`, and `-w` adds the top pick's levels to its marks.
 
