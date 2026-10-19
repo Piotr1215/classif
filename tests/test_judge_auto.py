@@ -341,7 +341,14 @@ class AutoInputTests(unittest.TestCase):
         fake = self.serve(self.settled)
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text="Note 0: all fine.\n")
         self.assertEqual(result.stdout.splitlines(), [
-            "no 1.00", "why: not marked, its text has one line and there is no -c"])
+            "no 1.00", "why: not marked, there is only one line to leave out"])
+
+    def test_why_on_a_one_line_c_judged_as_text_does_not_deny_the_c(self):
+        # With no INPUT, -c becomes the text, so "there is no -c" was false.
+        fake = self.serve(self.settled)
+        result = self.call(fake, "--why", "-c", "Note 0: all fine.", "An entry reports a deployment failure.")
+        self.assertEqual(result.stdout.splitlines(), [
+            "no 1.00", "why: not marked, there is only one line to leave out"])
 
     def test_why_marks_the_option_that_won(self):
         fake = self.serve(lambda body, n: chat([("2" if "payment was reversed" in body["messages"][1]["content"] else "1",

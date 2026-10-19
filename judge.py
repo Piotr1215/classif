@@ -1116,7 +1116,7 @@ def mark_lines(ask, text, context, base, key="score"):
     found no top line this missed."""
     marks, run = [], line_picks(text, context)
     if not run:
-        return None, "its text has one line and there is no -c"
+        return None, "there is only one line to leave out"
     while run:
         size, moved = 1 if len(run) <= 2 * SPLIT else -(-len(run) // SPLIT), []
         for part in (run[i:i + size] for i in range(0, len(run), size)):
