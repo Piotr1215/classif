@@ -1302,10 +1302,13 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
     names."""
     doc, t0 = Doc(text), time.monotonic()
     ename, edigest, digest = getattr(klass, "EMBED_MODEL", "embeddinggemma"), None, None
+    # deadline shrinks as each step ends, for the next step's own clock; end stays put, so time left
+    # counts each second once.
+    end = None if deadline is None else t0 + deadline
 
     def left():
         # run starts no call past the deadline; this bounds one in flight.
-        return 120 if deadline is None else max(0.2, deadline - (time.monotonic() - t0))
+        return 120 if end is None else max(0.2, end - time.monotonic())
 
     def bounded(r):
         # With a deadline every call's timeout is the time left, so one that times out was cut by it.
