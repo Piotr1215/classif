@@ -242,24 +242,21 @@ class AutoInputTests(unittest.TestCase):
         result = self.call(fake, "-j", "--why", "An entry reports a deployment failure.", text=long)
         read = json.loads(result.stdout)["read"]
         self.assertEqual(read["evidence"], [{"line": 2001, "end": 2001, "text": "Deployment failure: access denied.",
-                                            "label": "fits"}])
+                                            "label": "fits", "delta": 1.0}])
         self.assertEqual(read["lines"]["verdict"], "supported")
-        # Printed, each line says how it read, then, as on a text that fits, how far leaving it out of the
-        # judged passages moves p.
+        # Printed, each line says how it read and how far leaving it out of the judged passages moved p.
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text=long)
-        self.assertEqual(result.stdout.splitlines()[1:], ["  fits    2001: Deployment failure: access denied.",
-                                                          "why: the lines whose removal moves p(yes) most",
-                                                          "  +1.000  2001: Deployment failure: access denied."])
+        self.assertEqual(result.stdout.splitlines()[1:], ["  fits    +1.000  2001: Deployment failure: access denied."])
         # From files, both stay with the line in its own file.
         path = Path(self.tmp.name) / "long.log"
         path.write_text(long)
         result = self.call(fake, "-j", "--why", "-i", str(path), "An entry reports a deployment failure.")
-        self.assertEqual(json.loads(result.stdout)["marks"], [
-            {"from": "text", "at": 2001, "line": "Deployment failure: access denied.", "delta": 1.0, "file": str(path)}])
+        self.assertEqual(json.loads(result.stdout)["read"]["evidence"], [
+            {"line": 2001, "end": 2001, "text": "Deployment failure: access denied.", "label": "fits", "delta": 1.0,
+             "file": str(path)}])
         result = self.call(fake, "--why", "-i", str(path), "An entry reports a deployment failure.")
-        self.assertEqual(result.stdout.splitlines()[1:], [f"  fits    {path}:2001: Deployment failure: access denied.",
-                                                          "why: the lines whose removal moves p(yes) most",
-                                                          f"  +1.000  {path}:2001: Deployment failure: access denied."])
+        self.assertEqual(result.stdout.splitlines()[1:],
+                         [f"  fits    +1.000  {path}:2001: Deployment failure: access denied."])
 
     def test_past_the_window_without_an_embedding_model_the_scan_stops_at_a_witness(self):
         def respond(body, n):

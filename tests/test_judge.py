@@ -746,6 +746,22 @@ class CliTests(unittest.TestCase):
             self.assertIn("need at least two distinct labels", r.stderr, labels)
 
 
+class WhyLinesTests(unittest.TestCase):
+    cls = load()
+
+    def test_a_search_s_lines_print_the_largest_move_first_then_all_of_them_at_once(self):
+        read = {"evidence": [
+            {"line": 4, "end": 4, "text": "Note: fine.", "label": "fits", "delta": 0.002},
+            {"line": 9, "end": 10, "text": "-e  Exit immediately\n    unless in a test", "label": "fits", "delta": 0.41},
+            {"line": 30, "end": 30, "text": "It always exits.", "label": "breaks"}], "together": 0.88}
+        self.assertEqual(self.cls.why_lines(read), [
+            "  fits    +0.410  9-10: -e  Exit immediately",
+            "                            unless in a test",
+            "  fits    +0.002  4: Note: fine.",
+            "  breaks          30: It always exits.",
+            "  all     +0.880  the 3 runs above, left out at once"])
+
+
 class JudgeTests(unittest.TestCase):
     """judge() is the library entry a caller scoring many items uses: one
     call per item on a host it picked once, a dict back, nothing printed."""

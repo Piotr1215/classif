@@ -100,6 +100,9 @@ SEARCH_BUDGET = 30000   # chars the search judge reads, about 7.5k tokens or 5 s
 # cuts the tail: a supplier's one line in a ledger ranked first by words and
 # was cut after twenty look-alike passages by vector.
 SEARCH_LEXICAL, SEARCH_DENSE = 6, 20
+# Cited runs --why leaves out of a search's passages, one call each over all of them, plus one with all out:
+# at most 4 calls of the 30,000-char judge, each seconds of a full GPU.
+ABLATE = 3
 SEARCH_QUESTION = 'Going only by these passages from a longer text, is this shown: "{claim}"'
 dot = getattr(math, "sumprod", lambda a, b: sum(map(operator.mul, a, b)))
 
@@ -1334,35 +1337,40 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
             deadline = max(0.0, deadline - (time.monotonic() - t1))
 
     def ablate(r, frozen):
-        """--why after a search, as on a text that fits: lines of the judged
-        passages and of context are left out and the judge asked again
-        (klass.mark_lines), each mark how far its removal moved the answer's
-        p. The passages stay the ones the judge read, so a mark measures the
-        judgment, never a ranking that a removed line would change."""
+        """--why after a search: each run of lines the reader cited is left
+        out of the passages the judge read, and the judge asked again, one
+        call a run, then one with every run out at once. Its delta is how far
+        p of the answer fell. The passages stay the ones judged, so a delta
+        measures the judgment, never a ranking a removed line would change; a
+        run the reader called fits that barely moves it is shown as such."""
         nonlocal deadline
-        t1, calls, cut, label = time.monotonic(), 0, False, r["label"]
-        text, at = "\n\n".join(t for _, t in frozen["passages"]), []
-        for first, t in frozen["passages"]:
-            at += ([None] if at else []) + list(range(first, first + t.count("\n") + 1))
-
-        def without(t, c):
-            nonlocal calls, cut
+        runs, label = r["read"]["evidence"][:ABLATE], r["label"]
+        if not runs:
+            return
+        t1, calls, cut = time.monotonic(), 0, False
+        todo = [set(range(e["line"], e["end"] + 1)) for e in runs]
+        todo += [set().union(*todo)] if len(todo) > 1 else []
+        for k, gone in enumerate(todo):
             if left() <= 0.2:
                 cut = True
-                return {"label": None, "unscored": "deadline passed"}
+                break
+            if progress:
+                progress(k, len(todo), "cited lines left out")
+            parts = ["\n".join(l for n, l in enumerate(t.split("\n"), first) if n not in gone)
+                     for first, t in frozen["passages"]]
+            s = bounded(klass.judge(frozen["question"], "\n\n".join(filter(None, [frozen["chain"]] + parts)),
+                                    frozen["labels"], None, model=model, host=host, timeout=left(), context=context))
             calls += 1
-            s = bounded(klass.judge(frozen["question"], "\n\n".join(filter(None, [frozen["chain"], t])),
-                                    frozen["labels"], None, model=model, host=host, timeout=left(), context=c))
-            return s if s["label"] is None else {**s, "score": s["p"][label]}
-        marks, unmarked = klass.mark_lines(without, text, context, r["p"][label])
-        if cut and not calls:
-            marks, unmarked = None, "the deadline passed before a line was left out"
-        for m in marks or []:
-            if m["from"] == "text":
-                m["at"] = at[m["at"] - 1]
-        r.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
-        r["read"]["marks"] = {"calls": calls, "ms": round((time.monotonic() - t1) * 1000),
-                              **({"why": "the deadline cut the narrowing short"} if cut and calls else {})}
+            if s.get("label") is not None:
+                d = round(r["p"][label] - s["p"][label], 4)
+                if k < len(runs):
+                    runs[k]["delta"] = d
+                else:
+                    r["read"]["together"] = d
+        if progress:
+            progress(len(todo), len(todo), "cited lines left out")
+        r["read"]["deltas"] = {"calls": calls, "ms": round((time.monotonic() - t1) * 1000),
+                               **({"why": "the deadline passed before every run was left out"} if cut else {})}
         r["read"]["calls"] += calls
         if deadline is not None:
             deadline = max(0.0, deadline - (time.monotonic() - t1))

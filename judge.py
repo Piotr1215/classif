@@ -1689,7 +1689,6 @@ def read_pieces(a, raw, names, options, host, model, t0, context, files, evidenc
               "seconds instead of minutes", file=sys.stderr)
     if files and read.get("evidence"):
         read["evidence"] = in_files(read["evidence"], raw, files)
-    marks_in_files(r.get("marks"), raw, files)
     read["file"] = ",".join(f["file"] for f in files) if files else "-"
     if len(files) > 1:
         read["files"] = list(files)
@@ -1711,7 +1710,7 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
         res = {"label": label, "p": {k: round(v, 3) for k, v in p.items()} if p else None,
                "confidence": round(confidence(p[label], len(p)), 3) if p else None,
                "mode": "memory", "verdict": r["verdict"], "read": read, "model": model, "host": host,
-               "ms": round((time.monotonic() - t0) * 1000), **{k: r[k] for k in ("marks", "unmarked") if k in r}}
+               "ms": round((time.monotonic() - t0) * 1000)}
         if context:
             res["context"] = a.context
         if r["verdict"] == "unscored":
@@ -1727,10 +1726,6 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
     if a.why and not a.json:
         # Under a gate stdout carries the text, so the lines go to stderr.
         print("\n".join(why_lines(read)), file=sys.stderr if a.gate else sys.stdout)
-        if "marks" in r or "unmarked" in r:
-            # After a search, how far leaving each line out of the judged passages moves the answer.
-            print("\n".join(mark_report("why", f"p({label})", r.get("marks"), r.get("unmarked"), mark_where)),
-                  file=sys.stderr if a.gate else sys.stdout)
     if label is None or sys.stderr.isatty():
         # What the answer rests on, or why there is none. Scripts with an answer stay silent.
         line = memory().report(read) if "calls" in read else read["why"]
@@ -1764,20 +1759,25 @@ def in_files(evidence, raw, files):
 
 def why_lines(read):
     """--why's report: each run of lines the answer rests on as `  LINE: text`,
-    led by how it read (`  breaks  LINE: text`) when the read says, or what
-    it rests on when no line does."""
+    led by how it read (`  breaks  LINE: text`) when the read says, and by
+    how far leaving it out moved p (`  fits    +0.412  LINE: text`) after a
+    search, the largest move first; or what it rests on when no line does."""
     if not read.get("evidence"):
         return ["  (answered from counted facts and a sample, not from lines)"
                 if read.get("basis") == "sample" and "lines" not in read else "  (no line reads for or against it)"]
-    out = []
-    for e in read["evidence"]:
+    out, moved = [], any("delta" in e for e in read["evidence"])
+    for e in sorted(read["evidence"], key=lambda e: -abs(e.get("delta", 0))) if moved else read["evidence"]:
         at = str(e["line"]) if e["end"] == e["line"] else f"{e['line']}-{e['end']}"
         if e.get("file"):
             at = f"{e['file']}:{at}"
+        if moved:
+            at = (f"{e['delta']:+.3f}" if "delta" in e else " " * 6) + f"  {at}"
         if e.get("label"):
             at = f"{e['label']:<6}  {at}"
         first, *rest = e["text"].split("\n")
         out += [f"  {at}: {first}"] + [" " * (len(at) + 4) + l for l in rest]
+    if "together" in read:
+        out.append(f"  {'all':<6}  {read['together']:+.3f}  the {len(read['evidence'])} runs above, left out at once")
     return out
 
 
