@@ -666,7 +666,12 @@ def main():
 
 
 if __name__ == "__main__":
-    code = main()
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        # Ctrl-C ends a long read: wipe the progress line, no traceback.
+        sys.stderr.write("\r\033[K" if sys.stderr.isatty() else "")
+        code = 130
     # The judge's gate swaps sys.stdout for stderr, so flush the real one.
     cls.flush_all()
     # A probe thread stuck resolving an absent .local host holds normal exit.

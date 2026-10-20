@@ -662,20 +662,20 @@ class SearchTests(unittest.TestCase):
 
         def embed(texts, model=None, host=None, timeout=None, query=False):
             return {"vectors": [[1.0, 0.0] if "failure" in t else [0.0, 1.0] for t in texts], "tokens": len(texts)}
-        klass = types.SimpleNamespace(judge=judge, embed=embed, EMBED_MODEL="e", NUM_CTX=32768,
-                                      mark_lines=mem.load_class().mark_lines)
+        klass = types.SimpleNamespace(judge=judge, embed=embed, EMBED_MODEL="e", NUM_CTX=32768)
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False)
         self.assertEqual((r["verdict"], r["read"]["basis"], r["read"]["kind"]["kind"]), ("supported", "search", "exists"))
         self.assertEqual(r["read"]["calls"], 2)     # the root call and the one judge call
         self.assertEqual(r["read"]["index"]["passages"], r["read"]["passages"])
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False, evidence=True)
+        # The cited line, left out of the passages the judge read, moves p(yes) from 0.9 to 0.1.
         self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied.",
-                                                      "label": "fits"}])
+                                                      "label": "fits", "delta": 0.8}])
         self.assertEqual(r["read"]["lines"]["verdict"], "supported")
-        # And, as on a text that fits, how far leaving the line out of the judged passages moves p(yes).
-        self.assertEqual(r["marks"], [{"from": "text", "at": 301, "line": "Deployment failure: access denied.",
-                                       "delta": 0.8}])
-        self.assertEqual(r["read"]["calls"], 2 + r["read"]["lines"]["calls"] + r["read"]["marks"]["calls"])
+        # One judge call for the one cited run; no all-at-once call when there is only one.
+        self.assertEqual(r["read"]["deltas"]["calls"], 1)
+        self.assertNotIn("together", r["read"])
+        self.assertEqual(r["read"]["calls"], 2 + r["read"]["lines"]["calls"] + 1)
         # Not shown among the closest passages by meaning: no, with no full read.
         r = mem.answer(klass, long, "An entry reports a disk on fire.", "h", "m", cache=False)
         self.assertEqual((r["verdict"], r["label"], r["read"]["calls"]), ("contradicted", "no", 2))
