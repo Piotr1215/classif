@@ -1641,7 +1641,14 @@ def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
     marks, unmarked = mark_lines(ask, text, context, r["p"][label])
     # Marks count lines of the stripped text; the cited numbers are the input's, or each file's own.
     body = plain(raw)
-    lead = body[:len(body) - len(body.lstrip())].count("\n")
+    marks_in_files(marks, raw, files, body[:len(body) - len(body.lstrip())].count("\n"))
+    return ({"marks": marks} if marks is not None else {"unmarked": unmarked},
+            mark_report("why", f"p({name})", marks, unmarked, mark_where))
+
+
+def marks_in_files(marks, raw, files, lead=0):
+    """Each mark of a text line at its line of the input, lead lines on, or
+    with -i at its file and that file's own line."""
     for m in marks or []:
         if m["from"] == "text":
             m["at"] += lead
@@ -1649,12 +1656,12 @@ def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
                 e = in_files([{"line": m["at"], "end": m["at"], "text": m["line"]}], raw, files)[0]
                 m.update(file=e["file"], at=e["line"])
 
-    def where(m):
-        if m["from"] == "context":
-            return "context: "
-        return f"{m['file']}:{m['at']}: " if "file" in m else f"{m['at']}: "
-    return ({"marks": marks} if marks is not None else {"unmarked": unmarked},
-            mark_report("why", f"p({name})", marks, unmarked, where))
+
+def mark_where(m):
+    """What leads a mark's line in the report: its line, file:line, or context."""
+    if m["from"] == "context":
+        return "context: "
+    return f"{m['file']}:{m['at']}: " if "file" in m else f"{m['at']}: "
 
 
 def read_pieces(a, raw, names, options, host, model, t0, context, files, evidence):
@@ -1682,6 +1689,7 @@ def read_pieces(a, raw, names, options, host, model, t0, context, files, evidenc
               "seconds instead of minutes", file=sys.stderr)
     if files and read.get("evidence"):
         read["evidence"] = in_files(read["evidence"], raw, files)
+    marks_in_files(r.get("marks"), raw, files)
     read["file"] = ",".join(f["file"] for f in files) if files else "-"
     if len(files) > 1:
         read["files"] = list(files)
@@ -1703,7 +1711,7 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
         res = {"label": label, "p": {k: round(v, 3) for k, v in p.items()} if p else None,
                "confidence": round(confidence(p[label], len(p)), 3) if p else None,
                "mode": "memory", "verdict": r["verdict"], "read": read, "model": model, "host": host,
-               "ms": round((time.monotonic() - t0) * 1000)}
+               "ms": round((time.monotonic() - t0) * 1000), **{k: r[k] for k in ("marks", "unmarked") if k in r}}
         if context:
             res["context"] = a.context
         if r["verdict"] == "unscored":
@@ -1719,6 +1727,10 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
     if a.why and not a.json:
         # Under a gate stdout carries the text, so the lines go to stderr.
         print("\n".join(why_lines(read)), file=sys.stderr if a.gate else sys.stdout)
+        if "marks" in r or "unmarked" in r:
+            # After a search, how far leaving each line out of the judged passages moves the answer.
+            print("\n".join(mark_report("why", f"p({label})", r.get("marks"), r.get("unmarked"), mark_where)),
+                  file=sys.stderr if a.gate else sys.stdout)
     if label is None or sys.stderr.isatty():
         # What the answer rests on, or why there is none. Scripts with an answer stay silent.
         line = memory().report(read) if "calls" in read else read["why"]
