@@ -267,12 +267,14 @@ class Doc:
         return [line for _, line in sorted(out)]
 
 
-def evidence(doc, ids, top=20, chars=300):
+def evidence(doc, ids, top=20, chars=300, labels=None):
     """Where span ids sit in the source, as [{line, end, text}]: 1-based
     line numbers a reader can open the source at, runs of touching lines
     merged, each text cut to chars. The first top runs are kept. A run is
     dedented as a whole, so its lines keep their indentation relative to
-    each other."""
+    each other. labels, span id to how it read (fits, breaks), gives each run
+    its label and merges only lines that read alike: a witness and the line
+    that breaks it are two runs, not one."""
     if not ids:
         return []
     nl = [m.start() for m in re.finditer("\n", doc.text)]
@@ -281,12 +283,14 @@ def evidence(doc, ids, top=20, chars=300):
         s, e = doc.spans[i]
         e = s + len(doc.text[s:e].rstrip("\n"))
         first, last = bisect.bisect_left(nl, s) + 1, bisect.bisect_left(nl, e) + 1
-        if runs and first <= runs[-1][1] + 1:
+        label = labels.get(i) if labels else None
+        if runs and first <= runs[-1][1] + 1 and label == runs[-1][4]:
             runs[-1][1], runs[-1][3] = max(runs[-1][1], last), max(runs[-1][3], e)
         else:
-            runs.append([first, last, s, e])
-    return [{"line": a, "end": b, "text": textwrap.dedent(doc.text[s:e]).rstrip()[:chars]}
-            for a, b, s, e in runs[:top]]
+            runs.append([first, last, s, e, label])
+    return [{"line": a, "end": b, "text": textwrap.dedent(doc.text[s:e]).rstrip()[:chars],
+             **({"label": label} if label else {})}
+            for a, b, s, e, label in runs[:top]]
 
 
 def pack(doc, ordered, budget):
@@ -690,7 +694,8 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
                     # its caller has the answer and wants the lines, wherever wrapping put the witness.
                     evidence=evidence(doc, [i for i in judged if i in table.rows and table.rows[i].status == "ok"
                                             and table.rows[i].label in ("fits", "breaks")]
-                                      or (table.spans("fits", "breaks") if limited and not judged else [])),
+                                      or (table.spans("fits", "breaks") if limited and not judged else []),
+                                      labels={i: r.label for i, r in table.rows.items()}),
                     blocks=block_calls, by_block=by_block, related_blocks=related_blocks,
                     by_link=sum(r.via == "link" for r in table.rows.values()),
                     why=why, calls=calls, ms=round((time.monotonic() - t0) * 1000))

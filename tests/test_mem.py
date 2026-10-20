@@ -232,8 +232,10 @@ class ExecutorTests(unittest.TestCase):
         doc = self.mem.Doc("Header line.\n\nDeployment failure: access denied.\nThat failure was reversed.\n"
                            + "".join(f"Note {i}: check passed.\n" for i in range(50)))
         result = self.mem.run(doc, "An entry reports a deployment failure.", self.failure_reader([]))
+        # The witness and the line that breaks it are two runs, each saying how it read.
         self.assertEqual(result["read"]["evidence"],
-                         [{"line": 3, "end": 4, "text": "Deployment failure: access denied.\nThat failure was reversed."}])
+                         [{"line": 3, "end": 3, "text": "Deployment failure: access denied.", "label": "fits"},
+                          {"line": 4, "end": 4, "text": "That failure was reversed.", "label": "breaks"}])
 
     def test_evidence_keeps_the_lines_indentation_lined_up(self):
         doc = self.mem.Doc('{\n  "T": 4.3,\n  "U": 2.7\n}\n')
@@ -666,7 +668,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(r["read"]["calls"], 2)     # the root call and the one judge call
         self.assertEqual(r["read"]["index"]["passages"], r["read"]["passages"])
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False, evidence=True)
-        self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied."}])
+        self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied.",
+                                                      "label": "fits"}])
         self.assertEqual(r["read"]["lines"]["verdict"], "supported")
         # Not shown among the closest passages by meaning: no, with no full read.
         r = mem.answer(klass, long, "An entry reports a disk on fire.", "h", "m", cache=False)

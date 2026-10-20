@@ -1745,14 +1745,15 @@ def in_files(evidence, raw, files):
             lo, hi = starts[k], starts[k + 1] - 1 if k + 1 < len(files) else math.inf
             a, b = max(e["line"], lo), min(e["end"], hi)
             if a <= b:
-                out.append({"file": f["file"], "line": a - lo + 1, "end": b - lo + 1,
+                out.append({**e, "file": f["file"], "line": a - lo + 1, "end": b - lo + 1,
                             "text": "\n".join(lines[a - e["line"]:b - e["line"] + 1])})
     return out
 
 
 def why_lines(read):
     """--why's report: each run of lines the answer rests on as `  LINE: text`,
-    or what it rests on when no line does."""
+    led by how it read (`  breaks  LINE: text`) when the read says, or what
+    it rests on when no line does."""
     if not read.get("evidence"):
         return ["  (answered from counted facts and a sample, not from lines)"
                 if read.get("basis") == "sample" and "lines" not in read else "  (no line reads for or against it)"]
@@ -1761,6 +1762,8 @@ def why_lines(read):
         at = str(e["line"]) if e["end"] == e["line"] else f"{e['line']}-{e['end']}"
         if e.get("file"):
             at = f"{e['file']}:{at}"
+        if e.get("label"):
+            at = f"{e['label']:<6}  {at}"
         first, *rest = e["text"].split("\n")
         out += [f"  {at}: {first}"] + [" " * (len(at) + 4) + l for l in rest]
     return out
