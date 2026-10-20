@@ -232,8 +232,10 @@ class ExecutorTests(unittest.TestCase):
         doc = self.mem.Doc("Header line.\n\nDeployment failure: access denied.\nThat failure was reversed.\n"
                            + "".join(f"Note {i}: check passed.\n" for i in range(50)))
         result = self.mem.run(doc, "An entry reports a deployment failure.", self.failure_reader([]))
+        # The witness and the line that breaks it are two runs, each saying how it read.
         self.assertEqual(result["read"]["evidence"],
-                         [{"line": 3, "end": 4, "text": "Deployment failure: access denied.\nThat failure was reversed."}])
+                         [{"line": 3, "end": 3, "text": "Deployment failure: access denied.", "label": "fits"},
+                          {"line": 4, "end": 4, "text": "That failure was reversed.", "label": "breaks"}])
 
     def test_evidence_keeps_the_lines_indentation_lined_up(self):
         doc = self.mem.Doc('{\n  "T": 4.3,\n  "U": 2.7\n}\n')
@@ -660,14 +662,20 @@ class SearchTests(unittest.TestCase):
 
         def embed(texts, model=None, host=None, timeout=None, query=False):
             return {"vectors": [[1.0, 0.0] if "failure" in t else [0.0, 1.0] for t in texts], "tokens": len(texts)}
-        klass = types.SimpleNamespace(judge=judge, embed=embed, EMBED_MODEL="e", NUM_CTX=32768)
+        klass = types.SimpleNamespace(judge=judge, embed=embed, EMBED_MODEL="e", NUM_CTX=32768,
+                                      mark_lines=mem.load_class().mark_lines)
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False)
         self.assertEqual((r["verdict"], r["read"]["basis"], r["read"]["kind"]["kind"]), ("supported", "search", "exists"))
         self.assertEqual(r["read"]["calls"], 2)     # the root call and the one judge call
         self.assertEqual(r["read"]["index"]["passages"], r["read"]["passages"])
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False, evidence=True)
-        self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied."}])
+        self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied.",
+                                                      "label": "fits"}])
         self.assertEqual(r["read"]["lines"]["verdict"], "supported")
+        # And, as on a text that fits, how far leaving the line out of the judged passages moves p(yes).
+        self.assertEqual(r["marks"], [{"from": "text", "at": 301, "line": "Deployment failure: access denied.",
+                                       "delta": 0.8}])
+        self.assertEqual(r["read"]["calls"], 2 + r["read"]["lines"]["calls"] + r["read"]["marks"]["calls"])
         # Not shown among the closest passages by meaning: no, with no full read.
         r = mem.answer(klass, long, "An entry reports a disk on fire.", "h", "m", cache=False)
         self.assertEqual((r["verdict"], r["label"], r["read"]["calls"]), ("contradicted", "no", 2))

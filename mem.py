@@ -267,12 +267,14 @@ class Doc:
         return [line for _, line in sorted(out)]
 
 
-def evidence(doc, ids, top=20, chars=300):
+def evidence(doc, ids, top=20, chars=300, labels=None):
     """Where span ids sit in the source, as [{line, end, text}]: 1-based
     line numbers a reader can open the source at, runs of touching lines
     merged, each text cut to chars. The first top runs are kept. A run is
     dedented as a whole, so its lines keep their indentation relative to
-    each other."""
+    each other. labels, span id to how it read (fits, breaks), gives each run
+    its label and merges only lines that read alike: a witness and the line
+    that breaks it are two runs, not one."""
     if not ids:
         return []
     nl = [m.start() for m in re.finditer("\n", doc.text)]
@@ -281,12 +283,14 @@ def evidence(doc, ids, top=20, chars=300):
         s, e = doc.spans[i]
         e = s + len(doc.text[s:e].rstrip("\n"))
         first, last = bisect.bisect_left(nl, s) + 1, bisect.bisect_left(nl, e) + 1
-        if runs and first <= runs[-1][1] + 1:
+        label = labels.get(i) if labels else None
+        if runs and first <= runs[-1][1] + 1 and label == runs[-1][4]:
             runs[-1][1], runs[-1][3] = max(runs[-1][1], last), max(runs[-1][3], e)
         else:
-            runs.append([first, last, s, e])
-    return [{"line": a, "end": b, "text": textwrap.dedent(doc.text[s:e]).rstrip()[:chars]}
-            for a, b, s, e in runs[:top]]
+            runs.append([first, last, s, e, label])
+    return [{"line": a, "end": b, "text": textwrap.dedent(doc.text[s:e]).rstrip()[:chars],
+             **({"label": label} if label else {})}
+            for a, b, s, e, label in runs[:top]]
 
 
 def pack(doc, ordered, budget):
@@ -510,8 +514,8 @@ def search(doc, index, question, ask, mode="exists", budget=SEARCH_BUDGET, qvec=
         used += len(index.texts[i]) + 2
     kept.sort()
     labels = ["yes", "no"] if mode == "exists" else list(JUDGE)
-    r = ask((SEARCH_QUESTION if mode == "exists" else JUDGE_QUESTION).format(claim=question),
-            "\n\n".join(([chain] if chain else []) + [index.texts[i].strip() for i in kept]), labels)
+    asked = (SEARCH_QUESTION if mode == "exists" else JUDGE_QUESTION).format(claim=question)
+    r = ask(asked, "\n\n".join(([chain] if chain else []) + [index.texts[i].strip() for i in kept]), labels)
     label = r.get("label")
     if label == "no" and not doc.complete:
         label, why = None, "the text may still grow"
@@ -529,8 +533,12 @@ def search(doc, index, question, ask, mode="exists", budget=SEARCH_BUDGET, qvec=
             "sources": [{"span": [index.blks[i][0], index.blks[i][-1]], "start": doc.spans[index.blks[i][0]][0],
                          "end": doc.spans[index.blks[i][-1]][1]} for i in kept],
             "evidence": [], "why": why, "calls": 1, "ms": round((time.monotonic() - t0) * 1000)}
+    # What the judge read, kept so an ablation asks it again of these passages, each at its first source line.
+    frozen = {"question": asked, "labels": labels, "chain": chain,
+              "passages": [(doc.text.count("\n", 0, doc.spans[index.blks[i][0]][0] + len(t) - len(t.lstrip())) + 1,
+                            t.strip()) for i in kept for t in [index.texts[i]]]}
     return {"verdict": verdict, "label": label if label in ("yes", "no") else None,
-            "p": r.get("p") if label in ("yes", "no") else None, "read": read}
+            "p": r.get("p") if label in ("yes", "no") else None, "read": read, "frozen": frozen}
 
 
 def reduce(doc, table, plan, question="", allowed=None):
@@ -690,7 +698,8 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
                     # its caller has the answer and wants the lines, wherever wrapping put the witness.
                     evidence=evidence(doc, [i for i in judged if i in table.rows and table.rows[i].status == "ok"
                                             and table.rows[i].label in ("fits", "breaks")]
-                                      or (table.spans("fits", "breaks") if limited and not judged else [])),
+                                      or (table.spans("fits", "breaks") if limited and not judged else []),
+                                      labels={i: r.label for i, r in table.rows.items()}),
                     blocks=block_calls, by_block=by_block, related_blocks=related_blocks,
                     by_link=sum(r.via == "link" for r in table.rows.values()),
                     why=why, calls=calls, ms=round((time.monotonic() - t0) * 1000))
@@ -1323,6 +1332,40 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
         r["read"]["calls"] += lines_["read"]["calls"]
         if deadline is not None:
             deadline = max(0.0, deadline - (time.monotonic() - t1))
+
+    def ablate(r, frozen):
+        """--why after a search, as on a text that fits: lines of the judged
+        passages and of context are left out and the judge asked again
+        (klass.mark_lines), each mark how far its removal moved the answer's
+        p. The passages stay the ones the judge read, so a mark measures the
+        judgment, never a ranking that a removed line would change."""
+        nonlocal deadline
+        t1, calls, cut, label = time.monotonic(), 0, False, r["label"]
+        text, at = "\n\n".join(t for _, t in frozen["passages"]), []
+        for first, t in frozen["passages"]:
+            at += ([None] if at else []) + list(range(first, first + t.count("\n") + 1))
+
+        def without(t, c):
+            nonlocal calls, cut
+            if left() <= 0.2:
+                cut = True
+                return {"label": None, "unscored": "deadline passed"}
+            calls += 1
+            s = bounded(klass.judge(frozen["question"], "\n\n".join(filter(None, [frozen["chain"], t])),
+                                    frozen["labels"], None, model=model, host=host, timeout=left(), context=c))
+            return s if s["label"] is None else {**s, "score": s["p"][label]}
+        marks, unmarked = klass.mark_lines(without, text, context, r["p"][label])
+        if cut and not calls:
+            marks, unmarked = None, "the deadline passed before a line was left out"
+        for m in marks or []:
+            if m["from"] == "text":
+                m["at"] = at[m["at"] - 1]
+        r.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
+        r["read"]["marks"] = {"calls": calls, "ms": round((time.monotonic() - t1) * 1000),
+                              **({"why": "the deadline cut the narrowing short"} if cut and calls else {})}
+        r["read"]["calls"] += calls
+        if deadline is not None:
+            deadline = max(0.0, deadline - (time.monotonic() - t1))
     reader, saved = (leaf if reader_model else ask), None
     if cache:
         saved = Saved(os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "classif",
@@ -1393,6 +1436,7 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
                 qvec = (klass.embed([question], model=ename, host=host, timeout=left(), query=True).get("vectors")
                         or [None])[0]
             searched = search(doc, idx, question, ask, mode=mode, qvec=qvec)
+            frozen = searched.pop("frozen")
             searched["read"]["index"] = index
             if deadline is not None:
                 deadline = max(0.0, deadline - (time.monotonic() - t1))
@@ -1404,6 +1448,7 @@ def answer(klass, text, question, host, model, names=None, shown=None, plan="aut
                 r, searched = searched, None
                 if evidence:
                     rest_on(r, top)
+                    ablate(r, frozen)
         if r is None and plan == "auto" and not graph and picked[0] not in ("exists", "all"):
             # The lines linked to what the claim names come first: a confident
             # answer from them stands, anything else falls back to the full read.
