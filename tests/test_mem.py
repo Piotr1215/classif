@@ -694,6 +694,34 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(r["read"]["scan_complete"])
         self.assertNotIn("missing", r["read"]["search"]["index"])
 
+    def test_a_deadline_counts_each_second_once_so_deltas_run_in_the_time_left(self):
+        # Each step's time came off the deadline and then off the clock again: on a 6 s deadline,
+        # 2 s of root call and 2 s of search left the deltas no time at all.
+        mem, now = self.mem, [100.0]
+        long = "".join(f"Note {i}: routine check passed.\n" for i in range(300)) + "Deployment failure: access denied.\n"
+
+        def judge(question, text, labels, options=None, model=None, host=None, num_ctx=None, timeout=None,
+                  context=None):
+            if question == mem.KIND_QUESTION:
+                now[0] += 2
+                label = "4"
+            elif "Taken alone" in question or "Does this passage" in question:
+                label = "fits" if "failure" in text else "unrelated"
+            else:
+                now[0] += 2 if "is this shown" in question and "access denied" in text else 0
+                label = "yes" if "access denied" in text else "no"
+            return {"label": label, "p": {l: (0.9 if l == label else 0.1 / max(1, len(labels) - 1)) for l in labels}}
+
+        def embed(texts, model=None, host=None, timeout=None, query=False):
+            return {"vectors": [[1.0, 0.0] if "failure" in t else [0.0, 1.0] for t in texts], "tokens": len(texts)}
+        klass = types.SimpleNamespace(judge=judge, embed=embed, EMBED_MODEL="e", NUM_CTX=32768)
+        with patch.object(mem.time, "monotonic", lambda: now[0]):
+            r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False,
+                           deadline=6, evidence=True)
+        self.assertEqual(r["verdict"], "supported")
+        self.assertEqual(r["read"]["evidence"][0]["delta"], 0.8)
+        self.assertNotIn("why", r["read"]["deltas"])
+
 
 if __name__ == "__main__":
     unittest.main()
