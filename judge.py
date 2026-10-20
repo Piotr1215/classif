@@ -317,6 +317,17 @@ def confidence(pmax, n):
     return (n * pmax - 1) / (n - 1)
 
 
+def places(v, floor=None):
+    """v to two places, or to as many more as it takes to read under floor: a
+    p or grade that missed -t must not print as one that meets it, 0.996 as
+    1.00 under -t 0.999."""
+    for n in range(2, 7):
+        s = f"{v:.{n}f}"
+        if floor is None or v >= floor or float(s) < floor:
+            break
+    return s
+
+
 def level_score(p):
     """Jev's Score: each level's number times its probability, summed, over
     p ordered low to high. 1.43 sits between levels 1 and 2, leaning to 1."""
@@ -1027,7 +1038,8 @@ def tag_main(argv, prog="classif tag"):
                 print(f"{n:<{w}}  unscored")
             else:
                 v = t["grade"] if "grade" in t else t["p"][t["label"]]
-                print(f"{n:<{w}}  {t['label']:<{lw}}  {v:.2f}" + (" unsure" if t.get("unsure") else ""))
+                print(f"{n:<{w}}  {t['label']:<{lw}}  {places(v, a.min_p if t.get('unsure') else None)}"
+                      + (" unsure" if t.get("unsure") else ""))
     for n, t in tags.items():
         if t["label"] is None:
             print(f"{PROG}: {n}: unscored: {t['unscored']}", file=sys.stderr)
@@ -1478,7 +1490,7 @@ def main(argv=None, prog="classif"):
     # A winner under --min-p is neither a yes nor a no the caller should act
     # on: 0.49 and 0.51 would otherwise trigger opposite actions.
     unsure = a.min_p is not None and p[label] < a.min_p
-    verdict = f"{show[label]} {p[label]:.2f}" + (" unsure" if unsure else "")
+    verdict = f"{show[label]} {places(p[label], a.min_p if unsure else None)}" + (" unsure" if unsure else "")
     why, lines = why_direct(a, raw, text, context, files, labels, options, names, r, t0) if a.why else ({}, [])
     if a.json:
         res = {"label": show[label], "p": {show[l]: round(v, 3) for l, v in p.items()},
@@ -1557,7 +1569,7 @@ def score_main(a, text, context, labels, names, levels):
             res.update({"marks": marks} if marks is not None else {"unmarked": unmarked})
         dump(res)
     else:
-        print(f"{r['level']} {r['grade']:.2f}")
+        print(f"{r['level']} {places(r['grade'], a.min_p if below else None)}")
         if not a.why and sys.stderr.isatty():
             print(grade_note(r), file=sys.stderr)
         if a.why:
@@ -1685,7 +1697,8 @@ def long_input(a, raw, names, options, host, model, t0, out, context=None, files
     first = names[0] if names else "yes"
     p = r["p"] if label and r["p"] else None
     unsure = bool(a.min_p is not None and p and p[label] < a.min_p)
-    verdict = (label or r["verdict"]) + (f" {p[label]:.2f}" if p else "") + (" unsure" if unsure else "")
+    verdict = ((label or r["verdict"]) + (f" {places(p[label], a.min_p if unsure else None)}" if p else "")
+               + (" unsure" if unsure else ""))
     if a.json:
         res = {"label": label, "p": {k: round(v, 3) for k, v in p.items()} if p else None,
                "confidence": round(confidence(p[label], len(p)), 3) if p else None,
