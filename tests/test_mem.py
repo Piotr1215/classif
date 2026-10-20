@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import textwrap
 import types
 import unittest
 from unittest.mock import patch
@@ -144,6 +145,32 @@ class ExecutorTests(unittest.TestCase):
         result = self.mem.run(doc, "Is INV-42 currently paid?", ask, only=[0])
         self.assertEqual(result["verdict"], "insufficient")
         self.assertFalse(result["read"]["scan_complete"])
+
+    def test_a_read_limited_to_some_lines_cites_what_fits_at_any_wrap_width(self):
+        # --why after a search reads only the judged passages, so the read ends
+        # "only some lines were allowed" with no judge call. Evidence came only
+        # from judged lines, and man bash at 80 columns printed none.
+        rule = ("Exit immediately if a command fails. The shell does not exit if the command that fails "
+                "is part of the command list immediately following a while or until keyword.")
+        filler = [f"Builtin number {k} prints its own name." for k in range(12)]
+
+        def ask(question, text, labels, options=None):
+            # The reader flags whatever names the exit rule; every link points nowhere.
+            label = ("fits" if "exit" in text.lower() else "unrelated") if "fits" in labels else \
+                "0" if "0" in labels else "unknown"
+            return {"label": label, "p": {k: float(k == label) for k in labels}}
+
+        for width in (30, 60, 200):
+            with self.subTest(width=width):
+                doc = self.mem.Doc("\n".join(filler[:6] + textwrap.wrap(rule, width) + filler[6:]))
+                only = list(range(len(doc.spans) - 1))
+                result = self.mem.run(doc, "Does the shell ever keep running after a command fails?", ask,
+                                      only=only, block=self.mem.CHUNK)
+                self.assertEqual(result["verdict"], "insufficient")
+                cited = " ".join(e["text"] for e in result["read"]["evidence"])
+                self.assertIn("Exit immediately", cited)
+                self.assertIn("does not exit", " ".join(cited.split()))
+                self.assertNotIn("Builtin", cited)
 
     def test_auto_meets_every_golden_and_answers_from_part_only_where_the_claim_allows(self):
         for case in self.corpus["cases"]:

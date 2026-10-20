@@ -203,6 +203,13 @@ class HistogramTests(Base):
         self.write_log([0.02] * 50 + [0.12] * 5 + [0.97] * 30 + [0.62] * 3)
         self.assertIn("valley at 0.05-0.10 (0 rows)", self.hist())
 
+    def test_a_few_rows_name_no_valley(self):
+        # One stray row on each side of an empty bin made a valley from 5 rows.
+        self.write_log([0.12, 0.62, 0.97, 0.97, 0.97])
+        out = self.hist()
+        self.assertIn("too few rows to name a valley (5 of 50)", out)
+        self.assertNotIn("valley at", out)
+
     def test_flat_log_reports_no_valley(self):
         self.write_log([i / 100 for i in range(100)])
         self.assertIn("no valley", self.hist())

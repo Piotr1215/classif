@@ -181,6 +181,11 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual((at.returncode, at.stdout), (0, "workaround 0.70\n"))
         self.assertEqual((under.returncode, under.stdout), (1, "workaround 0.70\n"))
 
+    def test_a_grade_under_t_prints_enough_places_to_read_under_it(self):
+        fake = self.serve(("Safari", (0.004, 0.596, 0.4)))
+        r = run(fake.host, "How severe is it?", "The export crashes in Safari", *NAMED, "-t", "0.7")
+        self.assertEqual((r.returncode, r.stdout), (1, "workaround 0.698\n"))
+
     def test_a_sure_low_grade_does_not_pass_the_gate(self):
         fake = self.serve(("calm", (1.0, 0.0, 0.0)))
         r = run(fake.host, "How severe is it?", "calm note", *NAMED, "-t", "0.8", "-j")

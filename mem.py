@@ -659,6 +659,8 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
     if graph is not None and graph.doc.key != doc.key:
         raise ValueError("the graph was built from a different text; its line numbers do not fit this one")
     t0, leaf, calls, component = time.monotonic(), leaf or ask, 0, None
+    # The caller named the lines: --why after a search, reading what its judge read.
+    limited = only is not None and graph is None
 
     def over():
         return deadline is not None and time.monotonic() - t0 > deadline
@@ -684,8 +686,11 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
                     counts=red.counts, basis=basis, support=sorted(red.support), judged=sorted(judged),
                     sources=[{"span": i, "start": doc.spans[i][0], "end": doc.spans[i][1]} for i in sorted(judged)],
                     # The judged lines read one way or the other; an answer resting on none points at none.
+                    # A read of named lines that no judge settled cites what it read one way or the other:
+                    # its caller has the answer and wants the lines, wherever wrapping put the witness.
                     evidence=evidence(doc, [i for i in judged if i in table.rows and table.rows[i].status == "ok"
-                                            and table.rows[i].label in ("fits", "breaks")]),
+                                            and table.rows[i].label in ("fits", "breaks")]
+                                      or (table.spans("fits", "breaks") if limited and not judged else [])),
                     blocks=block_calls, by_block=by_block, related_blocks=related_blocks,
                     by_link=sum(r.via == "link" for r in table.rows.values()),
                     why=why, calls=calls, ms=round((time.monotonic() - t0) * 1000))

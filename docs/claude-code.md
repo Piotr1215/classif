@@ -16,7 +16,7 @@ Only the verdict enters Claude's context. Exit codes branch as in the [README](.
 
 ## Off switches
 
-- `CLASSIF=0` turns classif off in one process.
+- `CLASSIF=0` turns `classif classify` off in one process: it exits 2 and logs nothing. A question, `tag` and `each` still answer, so a caller that runs them checks `CLASSIF` itself.
 - `classif unload` frees the GPU for something else; the next call loads the models again.
 
 ## Removed RAG gate

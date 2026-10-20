@@ -222,6 +222,12 @@ class CliTests(unittest.TestCase):
         r = run(fake.host, "-t", "1", "q?", "t")
         self.assertEqual((r.returncode, r.stdout), (0, "yes 1.00\n"))
 
+    def test_an_unsure_p_prints_enough_places_to_read_under_min_p(self):
+        # 0.996 to two places is 1.00, which reads as past -t 0.999.
+        fake = self.serve(chat([("Yes", math.log(0.996)), ("No", math.log(0.004))]))
+        r = run(fake.host, "-t", "0.999", "q?", "t")
+        self.assertEqual((r.returncode, r.stdout), (3, "yes 0.996 unsure\n"))
+
     def test_json_says_unsure_only_when_min_p_is_asked_for(self):
         fake = self.serve(chat([("Yes", math.log(0.6)), ("No", math.log(0.4))]))
         out = json.loads(run(fake.host, "-j", "-t", "0.7", "q?", "t").stdout)

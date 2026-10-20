@@ -30,7 +30,9 @@ spec's model come first, since on a small GPU a second model evicts the
 first. Fields are cut to the spec's caps: a longer field costs time, and a
 long query pushes p(yes) up on its own.
 
-Env: CLASSIF=0 disables everything. CLASSIF_HOSTS, CLASSIF_TIMEOUT and
+Env: CLASSIF=0 turns classify off: it exits 2 and logs nothing. A question,
+tag and each still answer, so a caller that runs them checks CLASSIF itself
+(__tripwire.sh does). CLASSIF_HOSTS, CLASSIF_TIMEOUT and
 CLASSIF_CALIBRATION as for judge.py. CLASSIF_DIR (the only spec dir when set),
 CLASSIF_LOG (default ~/.local/state/classif/log.jsonl).
 """
@@ -63,6 +65,7 @@ cls = _load_class()
 INFLIGHT = 8
 SMOKE_MASS = 0.95
 SMOKE_ACC = 0.85
+VALLEY_ROWS = 50   # under this, one stray row makes a valley
 LOG_MAX = 16 << 20
 LOG_KEEP = 20000
 
@@ -333,7 +336,10 @@ def histogram(name, hook=None, days=None):
         top = max(counts) or 1
         out += [f"{i / 20:.2f}-{(i + 1) / 20:.2f} {'#' * round(40 * c / top):<40} {c}" for i, c in enumerate(counts)]
         v = valley(counts)
-        out.append("no valley" if v is None else f"valley at {v / 20:.2f}-{(v + 1) / 20:.2f} ({counts[v]} rows)")
+        if len(rows) < VALLEY_ROWS:
+            out.append(f"too few rows to name a valley ({len(rows)} of {VALLEY_ROWS})")
+        else:
+            out.append("no valley" if v is None else f"valley at {v / 20:.2f}-{(v + 1) / 20:.2f} ({counts[v]} rows)")
     return "\n".join(out)
 
 

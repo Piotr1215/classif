@@ -153,12 +153,13 @@ class TagTests(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (3, "urgency  today    0.90\nkind     asks me  0.80 unsure\n"))
 
     def test_min_p_compares_the_unrounded_p(self):
-        # 0.9996 and 0.7996 print as 1.00 and 0.80 but sit under -t 1 and -t 0.8.
+        # 0.9996 and 0.7996 round to 1.00 and 0.80 but sit under -t 1 and -t 0.8,
+        # so they print with the places that show it.
         for p, floor in ((0.9996, "1"), (0.7996, "0.8")):
             fake = self.serve(keyed('{"', "kind", '":', ("1", {"1": p, "2": 1 - p}), "}"))
             r = run(fake.host, "tag", "-t", floor, *KIND, stdin=MAIL)
             self.assertEqual(r.returncode, 3, (p, floor))
-            self.assertTrue(r.stdout.endswith(" unsure\n"), (p, floor))
+            self.assertTrue(r.stdout.endswith(f" {p} unsure\n"), (p, floor, r.stdout))
 
     def test_an_answer_at_min_p_or_past_it_passes(self):
         # 0.80045 rounds to 0.800, under -t 0.8004; the unrounded p is past it.
