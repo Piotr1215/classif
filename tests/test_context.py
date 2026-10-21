@@ -11,6 +11,14 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
+
+
+def marked(text):
+    """The line a leaf call asks about: the one marked >>> <<< among its
+    neighbours. Any other text is returned whole."""
+    m = re.search(r"^>>> (.*?) <<<$", text, re.M | re.S)
+    return m.group(1) if m else text.strip()
 
 PUBLIC = Path(__file__).resolve().parent.parent / "classif"
 OVERFLOW = (400, {"error": "request (40000 tokens) exceeds the available context size (32768 tokens)"})
@@ -78,8 +86,8 @@ def reader(n, user):
     if "Last line:" in user:
         # the candidate numbered as the comment line
         return scored(next(l.split(":")[0] for l in user.splitlines() if "buy followers" in l))
-    if "Taken alone" in user or "Does this passage" in user:
-        return scored("fits" if "followers" in user or "offer" in user else "unrelated")
+    if "one line marked" in user or "a passage marked" in user:
+        return scored("fits" if "followers" in marked(user) or "offer" in marked(user) else "unrelated")
     return scored("yes")
 
 
