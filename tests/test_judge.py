@@ -78,8 +78,11 @@ class FakeOllama:
 
 def env(hosts, calibration="/nonexistent"):
     # The repo's calibration.json would temper the default model's p; tests
-    # that are not about calibration read none.
-    return {"CLASSIF_HOSTS": hosts, "PATH": "/usr/bin:/bin", "CLASSIF_CALIBRATION": calibration}
+    # that are not about calibration read none. The CLI runs on this
+    # interpreter, not the system one: a runner image with a newer python3
+    # printed help as "-e, --enum OPTION".
+    return {"CLASSIF_HOSTS": hosts, "PATH": f"{os.path.dirname(sys.executable)}:/usr/bin:/bin",
+            "CLASSIF_CALIBRATION": calibration}
 
 
 def run(hosts, *args, stdin="", calibration="/nonexistent"):
