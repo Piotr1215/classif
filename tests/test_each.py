@@ -127,8 +127,8 @@ class EachTests(unittest.TestCase):
         goals = self.file("goals.md", "Goal: ship\nnoise")
         r = run(fake.host, "each", "Take it?", "-i", offer, "-c", goals, "other", "-w")
         self.assertEqual(r.stdout.split("\n\n", 1)[1], "why offer.md: the lines whose removal moves p(yes) most\n"
-                                                     "  +0.300  key fact\n"
-                                                     "  -0.100  but late\n"
+                                                     "  +0.300  1: key fact\n"
+                                                     "  -0.100  3: but late\n"
                                                      "  +0.100  context: Goal: ship\n")
         # Two scores, then one call per line: three of the text, two of the context.
         self.assertEqual(len(fake.requests), 2 + 5)
@@ -145,7 +145,7 @@ class EachTests(unittest.TestCase):
         fake = self.serve(("key fact", 0.3), ("minor", 0.1))
         item = "\n".join(f"note {i}" for i in range(20)).replace("note 13", "key fact").replace("note 2", "minor")
         r = run(fake.host, "each", "Take it?", item, "-w")
-        self.assertTrue(r.stdout.endswith("p(yes) most\n  +0.300  key fact\n"), r.stdout)
+        self.assertTrue(r.stdout.endswith("p(yes) most\n  +0.300  14: key fact\n"), r.stdout)
         # One score, then 4 runs of 5 lines and the 5 lines of the run that moved most: 10 calls, not 1 + 20.
         self.assertEqual(len(fake.requests), 1 + 4 + 5)
 
