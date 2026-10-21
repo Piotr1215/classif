@@ -1145,16 +1145,14 @@ def print_marks(head, what, marks, unmarked):
     print("\n".join(mark_report(head, what, marks, unmarked)))
 
 
-def mark_report(head, what, marks, unmarked, where=None):
+def mark_report(head, what, marks, unmarked):
     """mark_lines()'s marks under head, each with how far its removal moved
-    what, and before its line where(mark) or `context: ` for a line of -c;
-    or why there are none."""
+    what and where its line is (mark_where); or why there are none."""
     if marks is None:
         return [f"{head}: not marked, {unmarked}"]
     out = [f"{head}: the lines whose removal moves {what} most"]
     for m in marks:
-        at = where(m) if where else "context: " if m["from"] == "context" else ""
-        out.append(f"  {m['delta']:+.3f}  {at}{short(m['line'], 100)}")
+        out.append(f"  {m['delta']:+.3f}  {mark_where(m)}{short(m['line'], 100)}")
     return out + (["  (no line found whose removal moves it)"] if not marks else [])
 
 
@@ -1443,7 +1441,7 @@ def main(argv=None, prog="classif"):
                  "-s, pipe it in, or pass -i or -c")
 
     if a.levels is not None:
-        return score_main(a, text, context, *score_labels)
+        return score_main(a, raw, files, text, context, *score_labels)
     t0 = time.monotonic()
     if a.why and not text:
         ap.error("--why points at lines of the INPUT, and there is none: pass it after the question, pipe it "
@@ -1524,7 +1522,7 @@ def main(argv=None, prog="classif"):
     return 0
 
 
-def score_main(a, text, context, labels, names, levels):
+def score_main(a, raw, files, text, context, labels, names, levels):
     """-s: a Score question, modeled on Jev's Score. One call reads the
     levels as digits 0 to n-1, low to high, and answers one; the score is
     each level's number times its probability, summed, and the confidence is
@@ -1554,6 +1552,7 @@ def score_main(a, text, context, labels, names, levels):
     marks = unmarked = None
     if a.why:
         marks, unmarked = mark_lines(ask, text, context, r["grade"], "grade")
+        marks_in_files(marks, raw, files)
     if a.json:
         res = {k: rounded(r[k], 3) for k in ("type", "level", "grade", "score", "confidence", "legend",
                                               "probabilities")}
@@ -1639,16 +1638,17 @@ def why_direct(a, raw, text, context, files, labels, options, names, r, t0):
         return s if s["label"] is None else {**s, "score": s["p"][label]}
 
     marks, unmarked = mark_lines(ask, text, context, r["p"][label])
-    # Marks count lines of the stripped text; the cited numbers are the input's, or each file's own.
-    body = plain(raw)
-    marks_in_files(marks, raw, files, body[:len(body) - len(body.lstrip())].count("\n"))
+    marks_in_files(marks, raw, files)
     return ({"marks": marks} if marks is not None else {"unmarked": unmarked},
-            mark_report("why", f"p({name})", marks, unmarked, mark_where))
+            mark_report("why", f"p({name})", marks, unmarked))
 
 
-def marks_in_files(marks, raw, files, lead=0):
-    """Each mark of a text line at its line of the input, lead lines on, or
-    with -i at its file and that file's own line."""
+def marks_in_files(marks, raw, files):
+    """Each mark of a text line at its line of the input, or with -i at its
+    file and that file's own line. Marks count lines of the stripped text,
+    so the blank lines it lost at the top are added back."""
+    body = plain(raw)
+    lead = body[:len(body) - len(body.lstrip())].count("\n")
     for m in marks or []:
         if m["from"] == "text":
             m["at"] += lead

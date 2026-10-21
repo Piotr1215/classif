@@ -172,7 +172,15 @@ class ScoreTests(unittest.TestCase):
                                    "   0.50     60%  workaround\n"
                                    "   1.00     40%  blocking\n"
                                    "why: the lines whose removal moves the grade most\n"
-                                   "  +0.200  only in Safari\n")
+                                   "  +0.200  2: only in Safari\n")
+
+    def test_why_cites_a_marked_line_at_its_file_and_line_with_i(self):
+        fake = self.serve(("Safari", (0.0, 0.6, 0.4)), default=(0.2, 0.6, 0.2))
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        notes = Path(d) / "notes.md"
+        notes.write_text("\nThe export crashes\nonly in Safari\n")
+        r = run(fake.host, "How severe is it?", "-i", str(notes), *NAMED, "-w")
+        self.assertTrue(r.stdout.endswith(f"  +0.200  {notes}:3: only in Safari\n"), r.stdout)
 
     def test_t_gates_on_the_printed_grade_so_a_lower_one_exits_1(self):
         fake = self.serve(("Safari", (0.0, 0.6, 0.4)))
