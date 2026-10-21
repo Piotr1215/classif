@@ -1759,13 +1759,15 @@ def in_files(evidence, raw, files):
 
 def why_lines(read):
     """--why's report: each run of lines the answer rests on as `  LINE: text`,
-    led by how it read (`  breaks  LINE: text`) when the read says, and by
-    how far leaving it out moved p (`  fits    +0.412  LINE: text`) after a
-    search, the largest move first; or what it rests on when no line does."""
+    led by how it read and the reader's p for that (`  breaks 0.40  LINE:
+    text`) when the read says, and by how far leaving it out moved p (`  fits
+    0.96  +0.412  LINE: text`) after a search, the largest move first; or
+    what it rests on when no line does."""
     if not read.get("evidence"):
         return ["  (answered from counted facts and a sample, not from lines)"
                 if read.get("basis") == "sample" and "lines" not in read else "  (no line reads for or against it)"]
     out, moved = [], any("delta" in e for e in read["evidence"])
+    sure = any("p" in e for e in read["evidence"])
     for e in sorted(read["evidence"], key=lambda e: -abs(e.get("delta", 0))) if moved else read["evidence"]:
         at = str(e["line"]) if e["end"] == e["line"] else f"{e['line']}-{e['end']}"
         if e.get("file"):
@@ -1773,11 +1775,12 @@ def why_lines(read):
         if moved:
             at = (f"{e['delta']:+.3f}" if "delta" in e else " " * 6) + f"  {at}"
         if e.get("label"):
-            at = f"{e['label']:<6}  {at}"
+            at = f"{e['label']:<6}" + (f" {e['p']:.2f}" if "p" in e else " " * 5 if sure else "") + f"  {at}"
         first, *rest = e["text"].split("\n")
         out += [f"  {at}: {first}"] + [" " * (len(at) + 4) + l for l in rest]
     if "together" in read:
-        out.append(f"  {'all':<6}  {read['together']:+.3f}  the {len(read['evidence'])} runs above, left out at once")
+        out.append(f"  {'all':<{11 if sure else 6}}  {read['together']:+.3f}  the {len(read['evidence'])} runs above, "
+                   "left out at once")
     return out
 
 

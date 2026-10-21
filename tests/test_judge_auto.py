@@ -16,6 +16,13 @@ from pathlib import Path
 
 from test_judge import SCRIPT, chat, env
 
+
+def marked(text):
+    """The line a leaf call asks about: the one marked >>> <<< among its
+    neighbours. Any other text is returned whole."""
+    m = re.search(r"^>>> (.*?) <<<$", text, re.M | re.S)
+    return m.group(1) if m else text.strip()
+
 PUBLIC = SCRIPT.with_name("classif")
 
 
@@ -61,7 +68,7 @@ class SequencedOllama:
 
 def claim_reader(body, _):
     user = body["messages"][1]["content"]
-    return chat([("fits" if "Taken alone" in user or "Does this passage" in user else "yes", -0.01)])
+    return chat([("fits" if "one line marked" in user or "a passage marked" in user else "yes", -0.01)])
 
 
 class AutoInputTests(unittest.TestCase):
@@ -128,7 +135,7 @@ class AutoInputTests(unittest.TestCase):
             if n == 1:
                 return OVERFLOW
             user = body["messages"][1]["content"]
-            return chat([("fits" if "Taken alone" in user else "unknown", -0.01)])
+            return chat([("fits" if "one line marked" in user else "unknown", -0.01)])
 
         fake = self.serve(respond)
         result = self.call(fake, "-p", "-j", "Installation is safe.", text="Installer started.\n")
@@ -142,7 +149,7 @@ class AutoInputTests(unittest.TestCase):
             if n == 1:
                 return OVERFLOW
             user = body["messages"][1]["content"]
-            return (chat([("fits", -0.01)]) if "Taken alone" in user else
+            return (chat([("fits", -0.01)]) if "one line marked" in user else
                     chat([("yes", math.log(.6)), ("no", math.log(.4)), ("unknown", -100)]))
 
         fake = self.serve(respond)
@@ -221,8 +228,8 @@ class AutoInputTests(unittest.TestCase):
                 return OVERFLOW
             if "Which kind is it?" in user:
                 return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
-            if "Taken alone" in user or "Does this passage" in user:
-                return chat([("fits" if "failure" in user else "unrelated", -0.01)])
+            if "one line marked" in user or "a passage marked" in user:
+                return chat([("fits" if "failure" in marked(user) else "unrelated", -0.01)])
             return chat([("yes" if "failure: access denied" in user else "no", -0.01)])
         fake = self.serve(respond)
         long = "".join(f"Note {i}: routine check passed.\n" for i in range(2000)) + "Deployment failure: access denied.\n"
@@ -242,21 +249,21 @@ class AutoInputTests(unittest.TestCase):
         result = self.call(fake, "-j", "--why", "An entry reports a deployment failure.", text=long)
         read = json.loads(result.stdout)["read"]
         self.assertEqual(read["evidence"], [{"line": 2001, "end": 2001, "text": "Deployment failure: access denied.",
-                                            "label": "fits", "delta": 1.0}])
+                                            "label": "fits", "p": 1.0, "delta": 1.0}])
         self.assertEqual(read["lines"]["verdict"], "supported")
         # Printed, each line says how it read and how far leaving it out of the judged passages moved p.
         result = self.call(fake, "--why", "An entry reports a deployment failure.", text=long)
-        self.assertEqual(result.stdout.splitlines()[1:], ["  fits    +1.000  2001: Deployment failure: access denied."])
+        self.assertEqual(result.stdout.splitlines()[1:], ["  fits   1.00  +1.000  2001: Deployment failure: access denied."])
         # From files, both stay with the line in its own file.
         path = Path(self.tmp.name) / "long.log"
         path.write_text(long)
         result = self.call(fake, "-j", "--why", "-i", str(path), "An entry reports a deployment failure.")
         self.assertEqual(json.loads(result.stdout)["read"]["evidence"], [
-            {"line": 2001, "end": 2001, "text": "Deployment failure: access denied.", "label": "fits", "delta": 1.0,
-             "file": str(path)}])
+            {"line": 2001, "end": 2001, "text": "Deployment failure: access denied.", "label": "fits", "p": 1.0,
+             "delta": 1.0, "file": str(path)}])
         result = self.call(fake, "--why", "-i", str(path), "An entry reports a deployment failure.")
         self.assertEqual(result.stdout.splitlines()[1:],
-                         [f"  fits    +1.000  {path}:2001: Deployment failure: access denied."])
+                         [f"  fits   1.00  +1.000  {path}:2001: Deployment failure: access denied."])
 
     def test_past_the_window_without_an_embedding_model_the_scan_stops_at_a_witness(self):
         def respond(body, n):
@@ -268,8 +275,8 @@ class AutoInputTests(unittest.TestCase):
             if "Which kind is it?" in user:
                 # the root call: pick the option saying one line is enough
                 return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
-            if "Taken alone" in user or "Does this passage" in user:
-                return chat([("fits" if "failure" in user else "unrelated", -0.01)])
+            if "one line marked" in user or "a passage marked" in user:
+                return chat([("fits" if "failure" in marked(user) else "unrelated", -0.01)])
             # The search by words alone says no: not trusted, so the scan runs.
             return chat([("no" if "is this shown" in user else "yes", -0.01)])
         fake = self.serve(respond)
@@ -283,7 +290,7 @@ class AutoInputTests(unittest.TestCase):
         self.assertIn("ollama pull embeddinggemma", result.stderr)
         self.assertLess(len(fake.requests), 20)
         self.assertEqual(read["evidence"], [{"line": 1, "end": 1, "text": "Deployment failure: access denied.",
-                                            "label": "fits"}])
+                                            "label": "fits", "p": 1.0}])
 
     @staticmethod
     def witness(body, n):
@@ -292,8 +299,8 @@ class AutoInputTests(unittest.TestCase):
         user = body["messages"][1]["content"]
         if "Which kind is it?" in user:
             return chat([(re.search(r"(\d)=one line", user).group(1), -0.01)])
-        if "Taken alone" in user or "Does this passage" in user:
-            return chat([("fits" if "access denied" in user else "unrelated", -0.01)])
+        if "one line marked" in user or "a passage marked" in user:
+            return chat([("fits" if "access denied" in marked(user) else "unrelated", -0.01)])
         return chat([("yes", -0.01)])
 
     @staticmethod

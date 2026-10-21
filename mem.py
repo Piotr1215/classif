@@ -57,14 +57,25 @@ SPAN_MAX = 400     # chars per span
 BUDGET = 4000      # chars of evidence, about 900 tokens: one second of gemma4:12b
 HOPS = 3
 HEAD = 8           # best lexical matches read line by line before any passage
+# A line is read with this many chars of its paragraph on each side. Read alone, man bash's
+# "If the -n option is supplied, wait waits for a single" read breaks; with the words that finish
+# it, fits. Chars, not lines, so the window is the same text at any wrap width: at 60, 80, 100 and
+# 200 columns the lines of that sentence read fits, and none around it did (wider windows leaked).
+NEAR = 120
 K1, B = 1.2, 0.75
 PLANS = ("auto", "exists", "all", "count_distinct", "latest", "join", "semantic_check", "semantic_join")
 LEAF = ("fits", "breaks", "related", "unrelated")
 JUDGE = ("yes", "no", "unknown")
-LEAF_QUESTION = ('Claim: "{claim}" Taken alone, does this line give a case that fits the claim, a case that breaks '
-                 "it, something related that decides nothing by itself, or something unrelated?")
-BLOCK_QUESTION = ('Claim: "{claim}" Does this passage hold a line that fits the claim, a line that breaks it, a line '
-                  "related to it, or is all of it unrelated?")
+# The line is marked and asked about by the sentences it holds words of, so the label is the
+# line's own: "does this line fit, read with its neighbours" labelled a neighbour fits too.
+LEAF_QUESTION = ('Claim: "{claim}" The text is one line marked with >>> and <<<, shown with the lines around it. '
+                 "Does the marked line hold words of a sentence that fits the claim, of one that breaks it, of one "
+                 "related to it that decides nothing by itself, or only words of sentences unrelated to it?")
+# A passage is read the same way: a half cut mid-sentence ("the list of ids or, if no ids are
+# supplied, any job") read related alone and its lines were never read.
+BLOCK_QUESTION = ('Claim: "{claim}" The text is a passage marked with >>> and <<<, shown with the lines around it. '
+                  "Read with them, does the marked passage hold a line that fits the claim, a line that breaks it, "
+                  "a line related to it, or is all of it unrelated?")
 LINK_QUESTION = ('The last line uses a word like "that", "the same", "it" or "they" for something an earlier line '
                  'names. Which numbered line names it? Answer 0 when none of them does.')
 HUB = 20            # a name found on a linked line is not followed when more lines than this carry it
@@ -169,6 +180,31 @@ def split(text):
     return spans
 
 
+def runs_on(text, spans):
+    """Span ids ending a line that runs on into the next: wrapped, so the
+    next line, indented the same, starts with a word that would not have
+    fit on it at the width of its paragraph's widest line, or with the next
+    line indented under it, as a man page indents an option's text under its
+    name. Wrapped prose and man pages run on at any wrap width. A line per
+    record mostly does neither: read with the next record, a ledger's
+    "INV-0042 paid in full" read breaks from the reversal under it."""
+    ends = [i for i, (_, e) in enumerate(spans) if e == len(text) or text[e] == "\n"]
+    line = {i: text[text.rfind("\n", 0, spans[i][0]) + 1:spans[i][1]].expandtabs().rstrip() for i in ends}
+    out, para = set(), []
+    for i in ends:
+        para.append(i)
+        if i + 1 < len(spans) and text[spans[i][1]:spans[i + 1][0]].count("\n") == 1:
+            continue
+        widest = max(len(line[j]) for j in para)
+        for j in para[:-1]:
+            nxt = text[spans[j + 1][0]:spans[j + 1][1]].expandtabs()
+            ind, under = len(line[j]) - len(line[j].lstrip()), len(nxt) - len(nxt.lstrip())
+            if under > ind or under == ind and len(line[j]) + 1 + len(nxt.split()[0]) > widest:
+                out.add(j)
+        para = []
+    return out
+
+
 class Doc:
     """One text, never changed. Spans are str offsets (unit "char"):
     text[start:end] is the span. complete=False marks a stream that may still
@@ -187,6 +223,7 @@ class Doc:
             for t in ts:
                 self.index[t][i] = self.index[t].get(i, 0) + 1
         self.avg = (sum(self.length) / len(self.length)) if self.length else 0.0
+        self.runs_on = runs_on(text, self.spans)
 
     def span(self, i):
         if isinstance(i, bool) or not isinstance(i, int) or not 0 <= i < len(self.spans):
@@ -270,14 +307,16 @@ class Doc:
         return [line for _, line in sorted(out)]
 
 
-def evidence(doc, ids, top=20, chars=300, labels=None):
+def evidence(doc, ids, top=20, chars=300, labels=None, ps=None):
     """Where span ids sit in the source, as [{line, end, text}]: 1-based
     line numbers a reader can open the source at, runs of touching lines
     merged, each text cut to chars. The first top runs are kept. A run is
     dedented as a whole, so its lines keep their indentation relative to
     each other. labels, span id to how it read (fits, breaks), gives each run
     its label and merges only lines that read alike: a witness and the line
-    that breaks it are two runs, not one."""
+    that breaks it are two runs, not one. ps, span id to the reader's p for
+    that label, gives each run the p of its least sure line: breaks 0.40 is
+    weak evidence, and no cutoff hides it."""
     if not ids:
         return []
     nl = [m.start() for m in re.finditer("\n", doc.text)]
@@ -287,13 +326,15 @@ def evidence(doc, ids, top=20, chars=300, labels=None):
         e = s + len(doc.text[s:e].rstrip("\n"))
         first, last = bisect.bisect_left(nl, s) + 1, bisect.bisect_left(nl, e) + 1
         label = labels.get(i) if labels else None
+        p = ps.get(i) if ps else None
         if runs and first <= runs[-1][1] + 1 and label == runs[-1][4]:
             runs[-1][1], runs[-1][3] = max(runs[-1][1], last), max(runs[-1][3], e)
+            runs[-1][5] = p if runs[-1][5] is None else runs[-1][5] if p is None else min(runs[-1][5], p)
         else:
-            runs.append([first, last, s, e, label])
+            runs.append([first, last, s, e, label, p])
     return [{"line": a, "end": b, "text": textwrap.dedent(doc.text[s:e]).rstrip()[:chars],
-             **({"label": label} if label else {})}
-            for a, b, s, e, label in runs[:top]]
+             **({"label": label} if label else {}), **({"p": round(p, 4)} if label and p is not None else {})}
+            for a, b, s, e, label, p in runs[:top]]
 
 
 def pack(doc, ordered, budget):
@@ -374,14 +415,41 @@ def cut_short(r):
     return r.get("label") is None and bool(r.get("deadline"))
 
 
+def in_context(doc, i, j=None, chars=NEAR):
+    """Spans i to j (default i) marked >>> <<<, between up to chars of the
+    text before and after them on the lines they run on with (Doc.runs_on),
+    each end cut at a space: a line cut mid-sentence is read with the words
+    that finish it."""
+    def joined(a, b):
+        gap = doc.text[doc.spans[a][1]:doc.spans[b][0]]
+        return "\n" not in gap or (gap.count("\n") == 1 and a in doc.runs_on)
+    j = i if j is None else j
+    before, after, lo, hi = [], [], i, j
+    while lo > 0 and joined(lo - 1, lo) and len(" ".join(before)) < chars:
+        lo -= 1
+        before.insert(0, doc.span(lo).strip())
+    while hi + 1 < len(doc.spans) and joined(hi, hi + 1) and len(" ".join(after)) < chars:
+        hi += 1
+        after.append(doc.span(hi).strip())
+    head, tail = " ".join(before), " ".join(after)
+    if len(head) > chars:
+        cut = head.find(" ", len(head) - chars)
+        head = head[cut + 1:] if cut >= 0 else head[-chars:]
+    if len(tail) > chars:
+        cut = tail.rfind(" ", 0, chars)
+        tail = tail[:cut] if cut > 0 else tail[:chars]
+    return "\n".join(filter(None, [head, f">>> {doc.text[doc.spans[i][0]:doc.spans[j][1]].strip()} <<<", tail]))
+
+
 def check(doc, ids, claim, ask, table=None, jobs=1):
-    """One leaf call per span: fits, breaks, related or unrelated to the
-    claim. A failed call is a row too, so it is never read as unrelated."""
+    """One leaf call per span, read with its neighbours (in_context): fits,
+    breaks, related or unrelated to the claim. A failed call is a row too,
+    so it is never read as unrelated."""
     table = table if table is not None else Table()
     question = LEAF_QUESTION.format(claim=claim)
 
     def one(i):
-        r = ask(question, doc.span(i).strip(), list(LEAF))
+        r = ask(question, in_context(doc, i), list(LEAF))
         if r.get("label") is None:
             return Row(i, None, None, "deadline" if cut_short(r) else str(r.get("unscored", "failed")))
         return Row(i, r["label"], r["p"][r["label"]], "ok")
@@ -404,6 +472,18 @@ def blocks(doc, ids, size):
             cur = []
         cur.append(i)
     return out + [cur] if cur else out
+
+
+def halve(doc, blk):
+    """Where to cut a run of spans in two: at the paragraph end (a blank
+    line) nearest the char midpoint when each side keeps a quarter or more,
+    else at the char midpoint. A half cut mid-sentence reads as what its
+    piece says: "wait waits for a single" read breaks."""
+    def sides(k):
+        return doc.spans[blk[k]][0] - doc.spans[blk[0]][0], doc.spans[blk[-1]][1] - doc.spans[blk[k]][0]
+    ends = [k for k in range(1, len(blk)) if doc.text[doc.spans[blk[k - 1]][1]:doc.spans[blk[k]][0]].count("\n") > 1
+            and 4 * min(sides(k)) >= sum(sides(k))]
+    return min(ends or range(1, len(blk)), key=lambda k: abs(sides(k)[0] - sides(k)[1]))
 
 
 def chunks(doc, size=CHUNK):
@@ -699,10 +779,14 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
                     # The judged lines read one way or the other; an answer resting on none points at none.
                     # A read of named lines that no judge settled cites what it read one way or the other:
                     # its caller has the answer and wants the lines, wherever wrapping put the witness.
+                    # Only lines read on their own are cited: a passage no line of which says it alone is
+                    # kept whole for the judge, and citing it printed a half cut mid-sentence as breaks.
                     evidence=evidence(doc, [i for i in judged if i in table.rows and table.rows[i].status == "ok"
-                                            and table.rows[i].label in ("fits", "breaks")]
-                                      or (table.spans("fits", "breaks") if limited and not judged else []),
-                                      labels={i: r.label for i, r in table.rows.items()}),
+                                            and table.rows[i].label in ("fits", "breaks")
+                                            and table.rows[i].via != "block"]
+                                      or (table.spans("fits", "breaks", via="line") if limited and not judged else []),
+                                      labels={i: r.label for i, r in table.rows.items()},
+                                      ps={i: r.p for i, r in table.rows.items()}),
                     blocks=block_calls, by_block=by_block, related_blocks=related_blocks,
                     by_link=sum(r.via == "link" for r in table.rows.values()),
                     why=why, calls=calls, ms=round((time.monotonic() - t0) * 1000))
@@ -752,8 +836,7 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
                 return False
             if len(run_) > 1:
                 # One call clears a run that holds nothing against the stop.
-                r = leaf(BLOCK_QUESTION.format(claim=question),
-                         doc.text[doc.spans[run_[0]][0]:doc.spans[run_[-1]][1]], list(LEAF))
+                r = leaf(BLOCK_QUESTION.format(claim=question), in_context(doc, run_[0], run_[-1]), list(LEAF))
                 calls += 1
                 if r.get("label") == "unrelated":
                     for j in run_:
@@ -821,7 +904,7 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
             return lines(blk)
         if over():
             return True
-        r = leaf(BLOCK_QUESTION.format(claim=question), doc.text[doc.spans[blk[0]][0]:doc.spans[blk[-1]][1]], list(LEAF))
+        r = leaf(BLOCK_QUESTION.format(claim=question), in_context(doc, blk[0], blk[-1]), list(LEAF))
         calls, block_calls = calls + 1, block_calls + 1
         label = r.get("label")
         if label in (None, "unrelated", "related"):
@@ -834,8 +917,7 @@ def run(doc, question, ask, plan="auto", only=None, deadline=None, budget=BUDGET
             if progress:
                 progress(len(table.rows), len(doc.spans), "lines")
             return None
-        mid = min(range(1, len(blk)), key=lambda k: abs((doc.spans[blk[k]][0] - doc.spans[blk[0]][0])
-                                                        - (doc.spans[blk[-1]][1] - doc.spans[blk[k]][0])))
+        mid = halve(doc, blk)
         flagged = set(table.spans(label))
         for half in (blk[:mid], blk[mid:]):
             out = passage(half)

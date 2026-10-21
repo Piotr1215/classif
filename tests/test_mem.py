@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import textwrap
 import types
@@ -14,6 +15,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "mem.py"
 FIXTURES = Path(__file__).with_name("fixtures") / "external-memory.json"
+
+
+def marked(text):
+    """The line a leaf call asks about: the one marked >>> <<< among its
+    neighbours. Any other text is returned whole."""
+    m = re.search(r"^>>> (.*?) <<<$", text, re.M | re.S)
+    return m.group(1) if m else text.strip()
 
 
 def load():
@@ -40,7 +48,7 @@ class ScriptedAsk:
 
     def __call__(self, question, text, labels):
         self.calls.append((question, text, tuple(labels)))
-        if self.fail and self.fail in text:
+        if self.fail and self.fail in marked(text):
             return {"label": None, "unscored": "injected reader failure"}
         if question.startswith("The last line uses a word like"):
             label = self.links.get(text.split("Last line: ")[-1], "0")
@@ -49,7 +57,7 @@ class ScriptedAsk:
             if question.startswith("Does any of these lines break this claim:"):
                 label = {"yes": "no", "no": "yes", "unknown": "unknown"}[label]
         else:
-            label = self.leaf[text.strip()]
+            label = self.leaf[marked(text)]
         return {"label": label, "p": {k: float(k == label) for k in labels}}
 
 
@@ -156,7 +164,7 @@ class ExecutorTests(unittest.TestCase):
 
         def ask(question, text, labels, options=None):
             # The reader flags whatever names the exit rule; every link points nowhere.
-            label = ("fits" if "exit" in text.lower() else "unrelated") if "fits" in labels else \
+            label = ("fits" if "exit" in marked(text).lower() else "unrelated") if "fits" in labels else \
                 "0" if "0" in labels else "unknown"
             return {"label": label, "p": {k: float(k == label) for k in labels}}
 
@@ -171,6 +179,22 @@ class ExecutorTests(unittest.TestCase):
                 self.assertIn("Exit immediately", cited)
                 self.assertIn("does not exit", " ".join(cited.split()))
                 self.assertNotIn("Builtin", cited)
+
+    def test_a_line_is_read_with_the_lines_it_wraps_into_not_with_the_next_record(self):
+        # Read with the reversal under it, "INV-0042 paid in full" read breaks. A record per line stops
+        # short of the widest line, so the next record is not shown with it; wrapped prose runs on.
+        ledger = ["2026-07-15: Invoice INV-0042 issued by SUP-2 for 394 EUR.", "2026-07-15: Invoice INV-0042 paid in full.",
+                  "That payment was reversed the next day.", "2026-08-16: Invoice INV-0043 issued by SUP-3 for 401 EUR."]
+        prose = textwrap.wrap("If the -n option is given, wait waits for just one job and returns its exit status. " * 3, 40)
+        # "This option" means the name above it, so an option's text is read with its name.
+        entry = ["       --bwlimit=RATE", "              This option sets the maximum rate.", "       --checksum"]
+        doc = self.mem.Doc("\n".join(ledger + [""] + prose + [""] + entry))
+        self.assertNotIn("reversed", self.mem.in_context(doc, 1))
+        self.assertNotIn("paid in full", self.mem.in_context(doc, 2))
+        head, line, tail = self.mem.in_context(doc, len(ledger) + 1).split("\n")
+        self.assertEqual((head, line, tail[:len(prose[2])]), (prose[0], f">>> {prose[1]} <<<", prose[2]))
+        self.assertEqual(self.mem.in_context(doc, len(doc.spans) - 2),
+                         "--bwlimit=RATE\n>>> This option sets the maximum rate. <<<")
 
     def test_auto_meets_every_golden_and_answers_from_part_only_where_the_claim_allows(self):
         for case in self.corpus["cases"]:
@@ -206,10 +230,10 @@ class ExecutorTests(unittest.TestCase):
                 label = "yes"
             elif question.startswith("The last line uses"):
                 label = labels[-2]      # the line just before
-            elif "reversed" in text:
+            elif "reversed" in marked(text):
                 label = "breaks"
             else:
-                label = "fits" if "failure" in text else "unrelated"
+                label = "fits" if "failure" in marked(text) else "unrelated"
             return {"label": label, "p": {k: float(k == label) for k in labels}}
         return ask
 
@@ -234,8 +258,8 @@ class ExecutorTests(unittest.TestCase):
         result = self.mem.run(doc, "An entry reports a deployment failure.", self.failure_reader([]))
         # The witness and the line that breaks it are two runs, each saying how it read.
         self.assertEqual(result["read"]["evidence"],
-                         [{"line": 3, "end": 3, "text": "Deployment failure: access denied.", "label": "fits"},
-                          {"line": 4, "end": 4, "text": "That failure was reversed.", "label": "breaks"}])
+                         [{"line": 3, "end": 3, "text": "Deployment failure: access denied.", "label": "fits", "p": 1.0},
+                          {"line": 4, "end": 4, "text": "That failure was reversed.", "label": "breaks", "p": 1.0}])
 
     def test_evidence_keeps_the_lines_indentation_lined_up(self):
         doc = self.mem.Doc('{\n  "T": 4.3,\n  "U": 2.7\n}\n')
@@ -303,10 +327,10 @@ class ExecutorTests(unittest.TestCase):
         passages = []
 
         def ask(question, text, labels, options=None):
-            if "Does this passage" in question:
+            if "a passage marked" in question:
                 passages.append(text)
             label = ("yes" if set(labels) == {"yes", "no", "unknown"} else
-                     "fits" if "broke" in text else "unrelated")
+                     "fits" if "broke" in marked(text) else "unrelated")
             return {"label": label, "p": {k: float(k == label) for k in labels}}
         result = self.mem.run(doc, "An entry reports a deployment failure.", ask, block=3000, stop_at="exists")
         self.assertEqual(result["read"]["basis"], "witness")
@@ -322,7 +346,7 @@ class ExecutorTests(unittest.TestCase):
         def ask(question, text, labels):
             asked.append(question)
             if set(labels) != {"yes", "no", "unknown"}:
-                label = leaf[text.strip()]
+                label = leaf[marked(text)]
             else:
                 label = inverted if question.startswith("Does any of these lines") else "unknown"
             return {"label": label, "p": {k: float(k == label) for k in labels}}
@@ -475,7 +499,7 @@ class ExecutorTests(unittest.TestCase):
         ask = ScriptedAsk({doc.span(i): "unrelated" for i in range(len(doc.spans))}, final="unknown")
 
         def passage_ask(question, text, labels):
-            if "Does this passage hold a line" in question:
+            if "a passage marked" in question:
                 ask.calls.append((question, text, tuple(labels)))
                 if block_label is None:
                     return {"label": None, "unscored": "injected passage failure"}
@@ -506,7 +530,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertGreater(read["related_blocks"], 0)
         self.assertEqual(read["checked"], len(doc.spans))
         self.assertEqual(read["calls"], len(ask.calls))
-        alone = sum("Taken alone" in c[0] for c in ask.calls)
+        alone = sum("one line marked" in c[0] for c in ask.calls)
         self.assertLessEqual(alone, self.mem.HEAD)             # only the ranked head is read line by line
         self.assertEqual(read["counts"]["related"], len(doc.spans) - alone)
         self.assertEqual(read["support"], [])
@@ -519,7 +543,7 @@ class ExecutorTests(unittest.TestCase):
         ask = ScriptedAsk({doc.span(i): ("fits" if i == 333 else "unrelated") for i in range(len(doc.spans))})
 
         def passage_ask(question, text, labels):
-            if "Does this passage hold a line" in question:
+            if "a passage marked" in question:
                 ask.calls.append((question, text, tuple(labels)))
                 label = "fits" if hit in text else "unrelated"
                 return {"label": label, "p": {k: float(k == label) for k in labels}}
@@ -530,7 +554,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "supported")
         self.assertEqual(read["checked"], len(doc.spans))
         self.assertIn(333, read["support"])
-        line_reads = sum("Taken alone" in c[0] for c in ask.calls)
+        line_reads = sum("one line marked" in c[0] for c in ask.calls)
         self.assertLess(line_reads, len(doc.spans) // 8)     # the head and a few lines near the hit, not the file
         self.assertGreater(read["blocks"], 2)                 # the passage, then halves of the flagged side
 
@@ -547,7 +571,7 @@ class ExecutorTests(unittest.TestCase):
             whole = top in text and bottom in text
             if set(labels) == {"yes", "no", "unknown"}:
                 label = "yes" if whole else "no"
-            elif "Does this passage hold a line" in question:
+            elif "a passage marked" in question:
                 label = "fits" if whole else "related" if top in text else "unrelated"
             else:
                 label = "related" if top in text else "unrelated"     # the tail alone says nothing of the shell
@@ -654,8 +678,8 @@ class SearchTests(unittest.TestCase):
                   context=None):
             if question == mem.KIND_QUESTION:
                 label = "4"
-            elif "Taken alone" in question or "Does this passage" in question:
-                label = "fits" if "failure" in text else "unrelated"
+            elif "one line marked" in question or "a passage marked" in question:
+                label = "fits" if "failure" in marked(text) else "unrelated"
             else:
                 label = "yes" if "failure" in question and "access denied" in text else "no"
             return {"label": label, "p": {l: (0.9 if l == label else 0.1 / max(1, len(labels) - 1)) for l in labels}}
@@ -670,7 +694,7 @@ class SearchTests(unittest.TestCase):
         r = mem.answer(klass, long, "An entry reports a deployment failure.", "h", "m", cache=False, evidence=True)
         # The cited line, left out of the passages the judge read, moves p(yes) from 0.9 to 0.1.
         self.assertEqual(r["read"]["evidence"], [{"line": 301, "end": 301, "text": "Deployment failure: access denied.",
-                                                      "label": "fits", "delta": 0.8}])
+                                                      "label": "fits", "p": 0.9, "delta": 0.8}])
         self.assertEqual(r["read"]["lines"]["verdict"], "supported")
         # One judge call for the one cited run; no all-at-once call when there is only one.
         self.assertEqual(r["read"]["deltas"]["calls"], 1)
@@ -705,8 +729,8 @@ class SearchTests(unittest.TestCase):
             if question == mem.KIND_QUESTION:
                 now[0] += 2
                 label = "4"
-            elif "Taken alone" in question or "Does this passage" in question:
-                label = "fits" if "failure" in text else "unrelated"
+            elif "one line marked" in question or "a passage marked" in question:
+                label = "fits" if "failure" in marked(text) else "unrelated"
             else:
                 now[0] += 2 if "is this shown" in question and "access denied" in text else 0
                 label = "yes" if "access denied" in text else "no"
