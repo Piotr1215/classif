@@ -173,6 +173,11 @@ class RenderTests(Base):
 
 
 class HostTests(Base):
+    def test_bulk_worker_count_is_one_for_local_hosts_and_eight_for_remote(self):
+        with mock.patch.object(self.sf.cls, "is_local_gpu_host", side_effect=lambda h: h == "localhost:11434"):
+            self.assertEqual(self.sf.inference_workers("localhost:11434"), 1)
+            self.assertEqual(self.sf.inference_workers("remote.example:11434"), 8)
+
     def test_hosts_already_serving_the_spec_model_come_first(self):
         seen = []
         hosts = [("local:1", self.sf.cls.DEFAULT_MODEL), ("mac:1", SPEC["model"]), ("pop:1", SPEC["model"])]

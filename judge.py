@@ -92,12 +92,15 @@ CLASSIF_CALIBRATION names another calibration file.
 import argparse
 import functools
 import importlib.util
+import ipaddress
 import json
+import fcntl
 import math
 import os
 import re
 import select
 import socket
+import shutil
 import stat
 import sys
 import threading
@@ -105,6 +108,7 @@ import time
 import types
 import urllib.error
 import urllib.request
+import subprocess
 
 LOCAL_HOST = "localhost:11434"
 # gemma4:12b over llama3.2:3b for ad-hoc questions: llama answers yes to both
@@ -125,6 +129,7 @@ MASS_MIN = 0.5
 # llama3.2:3b 6.0GB; short calls
 # stay fast (~90ms and ~45ms); an 18k-token document took llama 5.4s.
 NUM_CTX = 32768
+GPU_LOCK_PATH = "/tmp/classif-gpu-inference.lock"
 # The search index past the window: a text's passages as vectors from a
 # 300M embedding model, built once per text, 170k tokens in 8.5 s on this
 # laptop's GPU against 100 s for the 12B to read them. Each model wants its
@@ -470,7 +475,12 @@ def chat(host, model, system, user, options, timeout=None, **extra):
     req = urllib.request.Request(f"http://{host}/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
     t0 = time.monotonic()
+    gate = None
     try:
+        if is_local_gpu_host(host):
+            gate = acquire_local_inference(timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15")))
+            if gate is None:
+                return {"label": None, "unscored": "local GPU busy or at thermal limit", "host": host}
         with urllib.request.urlopen(req, timeout=timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15"))) as r:
             resp = json.load(r)
     except urllib.error.HTTPError as e:
@@ -482,10 +492,104 @@ def chat(host, model, system, user, options, timeout=None, **extra):
         return r
     except (OSError, ValueError) as e:
         return {"label": None, "unscored": f"{host}: {e}", "host": host}
+    finally:
+        if gate is not None:
+            fcntl.flock(gate, fcntl.LOCK_UN)
+            gate.close()
     if not isinstance(resp, dict):
         return {"label": None, "unscored": f"{host}: response is not a JSON object", "host": host}
     resp["ms"] = round((time.monotonic() - t0) * 1000)
     return resp
+
+
+def is_local_gpu_host(host):
+    value = host.strip().lower()
+    if value.startswith("[") and "]" in value:
+        name = value[1:value.index("]")]
+    else:
+        candidate, sep, port = value.rpartition(":")
+        name = candidate if sep and port.isdigit() else value
+    if name == "localhost":
+        return True
+    try:
+        requested = ipaddress.ip_address(name)
+    except ValueError:
+        requested = None
+    if requested is not None and requested.is_loopback:
+        return True
+    try:
+        # The address list includes physical, VPN and Tailscale interfaces.
+        raw = subprocess.run(["ip", "-j", "address", "show"], capture_output=True,
+                             text=True, timeout=1.0, check=True).stdout
+        addresses = {ipaddress.ip_address(value) for iface in json.loads(raw)
+                     for info in iface.get("addr_info", [])
+                     if (value := info.get("local"))}
+        if not addresses:
+            return True
+        if requested is not None:
+            return requested in addresses
+        # Use a killable resolver process because libc getaddrinfo has no
+        # portable timeout. An unresolved host is treated as local.
+        result = subprocess.run(["getent", "ahosts", name], capture_output=True,
+                                text=True, timeout=1.0)
+        resolved = {ipaddress.ip_address(line.split()[0]) for line in result.stdout.splitlines()
+                    if line.split()}
+        return bool(resolved & addresses) if resolved else True
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # If we cannot prove that the target is remote, preserve the thermal
+        # guard. This can skip a request during DNS or interface failures.
+        return True
+
+
+def local_gpu_temperature():
+    """Read the local NVIDIA GPU temperature; None means the sensor failed.
+
+    CPU-only hosts do not have a thermal guard to apply. If an NVIDIA driver
+    is present, however, a missing or failing sensor is treated as unsafe.
+    """
+    command = shutil.which("nvidia-smi")
+    driver = os.path.exists("/proc/driver/nvidia")
+    if not command and not driver:
+        return 0
+    if not command:
+        return None
+    try:
+        out = subprocess.run([command, "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                             check=True, capture_output=True, text=True, timeout=2).stdout.splitlines()
+        return max(int(line.strip()) for line in out if line.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def acquire_local_inference(timeout):
+    """Serialize local GPU inference across processes and fail closed when hot."""
+    deadline = time.monotonic() + min(max(float(timeout), 0.0), 30.0)
+    # A single shared path makes this host-wide across classif processes and
+    # users. /tmp's sticky bit prevents unlinking another user's lock file.
+    path = GPU_LOCK_PATH
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o666)
+        try:
+            os.fchmod(fd, 0o666)
+        except PermissionError:
+            pass  # Another user owns the shared lock.
+        lock = os.fdopen(fd, "r+")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return None
+    while time.monotonic() < deadline:
+        temp = local_gpu_temperature()
+        if temp is None or temp >= 80:
+            time.sleep(min(2.0, max(deadline - time.monotonic(), 0)))
+            continue
+        return lock
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+    return None
 
 
 def judge(question, text, labels, options=None, model=None, host=None, num_ctx=NUM_CTX, timeout=None, context=None,
@@ -626,7 +730,12 @@ def embed(texts, model=EMBED_MODEL, host=None, timeout=None, query=False):
     body = json.dumps({"model": model, "input": [pre + t for t in texts], "truncate": True,
                        "keep_alive": keep_alive()}).encode()
     req = urllib.request.Request(f"http://{host}/api/embed", data=body, headers={"Content-Type": "application/json"})
+    gate = None
     try:
+        if is_local_gpu_host(host):
+            gate = acquire_local_inference(timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15")) * 4)
+            if gate is None:
+                return {"vectors": None, "unscored": "local GPU busy or at thermal limit"}
         with urllib.request.urlopen(req, timeout=timeout or float(os.environ.get("CLASSIF_TIMEOUT", "15")) * 4) as r:
             resp = json.load(r)
     except urllib.error.HTTPError as e:
@@ -634,6 +743,10 @@ def embed(texts, model=EMBED_MODEL, host=None, timeout=None, query=False):
         return {"vectors": None, "unscored": f"{host} HTTP {e.code}: {detail}", "missing": e.code == 404}
     except (OSError, ValueError) as e:
         return {"vectors": None, "unscored": f"{host}: {e}"}
+    finally:
+        if gate is not None:
+            fcntl.flock(gate, fcntl.LOCK_UN)
+            gate.close()
     vectors = resp.get("embeddings") if isinstance(resp, dict) else None
     if not isinstance(vectors, list) or len(vectors) != len(texts):
         return {"vectors": None, "unscored": f"{host}: response holds no embeddings for the {len(texts)} texts"}

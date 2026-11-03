@@ -25,6 +25,13 @@ SCRIPT = Path(__file__).resolve().parents[1] / "classif"
 MODULE = SCRIPT.with_name("judge.py")
 DEAD = "127.0.0.1:1"
 
+# The fake Ollama never uses a GPU. Keep subprocess tests independent of the
+# host sensor and avoid one hardware probe for every stubbed model call.
+_FAKE_BIN = tempfile.TemporaryDirectory()
+_fake_smi = Path(_FAKE_BIN.name) / "nvidia-smi"
+_fake_smi.write_text("#!/bin/sh\nprintf \'40\\n\'\n")
+_fake_smi.chmod(0o755)
+
 
 def load():
     loader = importlib.machinery.SourceFileLoader("class_cli", str(MODULE))
@@ -81,7 +88,7 @@ def env(hosts, calibration="/nonexistent"):
     # that are not about calibration read none. The CLI runs on this
     # interpreter, not the system one: a runner image with a newer python3
     # printed help as "-e, --enum OPTION".
-    return {"CLASSIF_HOSTS": hosts, "PATH": f"{os.path.dirname(sys.executable)}:/usr/bin:/bin",
+    return {"CLASSIF_HOSTS": hosts, "PATH": f"{_FAKE_BIN.name}:{os.path.dirname(sys.executable)}:/usr/bin:/bin",
             "CLASSIF_CALIBRATION": calibration}
 
 

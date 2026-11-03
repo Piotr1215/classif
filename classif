@@ -62,7 +62,14 @@ def _load_class():
 
 cls = _load_class()
 
+# Keep bulk commands paced. The lower-level lock also protects independent
+# classif processes from one another.
 INFLIGHT = 8
+
+
+def inference_workers(host):
+    """Pace GPU-backed bulk calls; retain existing parallelism remotely."""
+    return 1 if cls.is_local_gpu_host(host) else INFLIGHT
 SMOKE_MASS = 0.95
 SMOKE_ACC = 0.85
 VALLEY_ROWS = 50   # under this, one stray row makes a valley
@@ -367,7 +374,7 @@ def smoke(name):
         print(f"classif: skip: {no_host()}", file=sys.stderr)
         return 2
     rows = spec["smoke"]
-    with ThreadPoolExecutor(INFLIGHT) as pool:
+    with ThreadPoolExecutor(inference_workers(host)) as pool:
         res = list(pool.map(lambda r: judge_item(spec, r, host), rows))
     right = low = 0
     first = spec["labels"][0]
